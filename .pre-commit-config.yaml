@@ -1,0 +1,47 @@
+# To install pre-commit, run:
+#   uv run pre-commit install
+#
+# Pre-commit checks will then run on staged files by default.
+#
+# To run for all files, for debugging, testing, etc:
+#   uv run pre-commit run --all-files
+#
+# To run a single check on all files:
+#   uv run pre-commit run --all-files black
+#
+---
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+      - id: check-merge-conflict
+
+  - repo: https://github.com/ambv/black
+    rev: 25.1.0
+    hooks:
+      - id: black
+        name: Check code formatting (black)
+        language_version: python3.13
+
+  - repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+        name: isort (python)
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      - id: ruff-check
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: Run mypy
+        entry: uv run mypy .
+        language: system
+        pass_filenames: false
+        files: \.py$
