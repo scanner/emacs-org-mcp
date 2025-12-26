@@ -44,6 +44,45 @@ server = Server("emacs-org-mode")
 
 
 # =============================================================================
+# Timestamp Utilities
+# =============================================================================
+
+
+def format_org_timestamp(dt: datetime, active: bool = True) -> str:
+    """
+    Format a datetime as an org-mode timestamp.
+
+    Args:
+        dt: The datetime to format (should be naive, in local timezone)
+        active: True for active timestamp <...>, False for inactive [...]
+
+    Returns:
+        Formatted org-mode timestamp string
+
+    Examples:
+        Active: <2025-12-26 Thu 01:45>
+        Inactive: [2025-12-26 Thu 01:45]
+
+    Note:
+        Expects naive timestamps in the timezone of the running Emacs instance.
+        Org-mode timestamps do not support timezone information.
+    """
+    # Format: <YYYY-MM-DD DDD HH:MM> or [YYYY-MM-DD DDD HH:MM]
+    day_abbr = dt.strftime("%a")
+    timestamp = dt.strftime(f"%Y-%m-%d {day_abbr} %H:%M")
+
+    if active:
+        return f"<{timestamp}>"
+    else:
+        return f"[{timestamp}]"
+
+
+def get_current_timestamp(active: bool = True) -> str:
+    """Get current time as an org-mode timestamp."""
+    return format_org_timestamp(datetime.now(), active=active)
+
+
+# =============================================================================
 # Plain Text Formatting Utilities
 # =============================================================================
 
@@ -273,6 +312,11 @@ class Task:
     section: str  # Which section this task is in
     content: str  # Full task content as org string (for output)
     id: str = ""  # The :ID: from :PROPERTIES: drawer (UUID)
+    created: str = ""  # The :CREATED: timestamp (active, set on creation)
+    modified: str = (
+        ""  # The :MODIFIED: timestamp (inactive, updated on modification)
+    )
+    closed: str = ""  # The :CLOSED: timestamp (active, set when marked DONE)
 
     @property
     def ticket_id(self) -> str | None:
@@ -377,12 +421,18 @@ def parse_tasks_in_section(
         if todo_state not in ("TODO", "DONE", "WAITING", "CANCELLED"):
             continue
 
-        # Get :CUSTOM_ID: and :ID: from the :PROPERTIES: drawer
+        # Get properties from the :PROPERTIES: drawer
         custom_id = ""
         task_id = ""
+        created = ""
+        modified = ""
+        closed = ""
         if hasattr(heading, "properties") and heading.properties:
             custom_id = heading.properties.get("CUSTOM_ID", "")
             task_id = heading.properties.get("ID", "")
+            created = heading.properties.get("CREATED", "")
+            modified = heading.properties.get("MODIFIED", "")
+            closed = heading.properties.get("CLOSED", "")
 
         headline_text = (
             heading.headline.title
@@ -398,6 +448,9 @@ def parse_tasks_in_section(
                 section=section_name,
                 content=heading_to_org_string(heading),
                 id=task_id,
+                created=created,
+                modified=modified,
+                closed=closed,
             )
         )
 
@@ -428,12 +481,18 @@ def find_task(
             if todo_state not in ("TODO", "DONE", "WAITING", "CANCELLED"):
                 continue
 
-            # Get :CUSTOM_ID: and :ID: from the :PROPERTIES: drawer
+            # Get properties from the :PROPERTIES: drawer
             custom_id = ""
             task_id = ""
+            created = ""
+            modified = ""
+            closed = ""
             if hasattr(heading, "properties") and heading.properties:
                 custom_id = heading.properties.get("CUSTOM_ID", "")
                 task_id = heading.properties.get("ID", "")
+                created = heading.properties.get("CREATED", "")
+                modified = heading.properties.get("MODIFIED", "")
+                closed = heading.properties.get("CLOSED", "")
 
             headline_text = (
                 heading.headline.title
@@ -462,6 +521,9 @@ def find_task(
                     section=sec_name,
                     content=heading_to_org_string(heading),
                     id=task_id,
+                    created=created,
+                    modified=modified,
+                    closed=closed,
                 )
                 return (task, heading, section_heading, org)
 
@@ -591,6 +653,10 @@ def create_task(section_name: str, task_entry: str) -> tuple[str, str]:
     if "ID" not in new_heading.properties:
         new_heading.properties["ID"] = str(uuid.uuid4()).upper()
 
+    # Set :CREATED: timestamp (active) when creating new task
+    if "CREATED" not in new_heading.properties:
+        new_heading.properties["CREATED"] = get_current_timestamp(active=True)
+
     target_section.add_child(new_heading, new=True)
 
     # Add to High Level Tasks checklist if creating in active section
@@ -624,12 +690,32 @@ def update_task(
 
     task, old_heading, old_section_heading, org = result
     old_section_name = task.section
+    old_status = task.status
 
     # Parse the new task entry
     new_heading = parse_task_entry(new_task_entry)
 
-    # Determine target section based on new status
+    # Set timestamp properties
+    if not hasattr(new_heading, "properties") or not new_heading.properties:
+        new_heading.properties = {}
+
+    # Always set :MODIFIED: timestamp (inactive) on every update
+    new_heading.properties["MODIFIED"] = get_current_timestamp(active=False)
+
+    # Handle :CLOSED: timestamp (active) based on status transitions
     new_status = new_heading.headline.todo
+    if old_status != "DONE" and new_status == "DONE":
+        # Set :CLOSED: when transitioning to DONE
+        new_heading.properties["CLOSED"] = get_current_timestamp(active=True)
+    elif old_status == "DONE" and new_status != "DONE":
+        # Clear :CLOSED: timestamp when reopening a task
+        new_heading.properties.pop("CLOSED", None)
+    elif old_status == "DONE" and new_status == "DONE":
+        # Preserve existing :CLOSED: timestamp when task stays DONE
+        if task.closed:
+            new_heading.properties["CLOSED"] = task.closed
+
+    # Determine target section based on new status
     if new_status == "DONE":
         target_section = find_section(org, COMPLETED_SECTION)
         target_section_name = COMPLETED_SECTION

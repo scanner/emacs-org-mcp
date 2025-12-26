@@ -802,3 +802,155 @@ No properties drawer here (no :ID:).
         assert result is not None
         task, _, _, _ = result
         assert task.id == ""
+
+
+class TestTaskTimestamps:
+    """Tests for task timestamp properties (CREATED, MODIFIED, CLOSED)."""
+
+    def test_create_task_sets_created_timestamp(
+        self, empty_tasks_file: Path
+    ) -> None:
+        """
+        Given a new task
+        When the task is created
+        Then :CREATED: timestamp should be set with active timestamp format
+        """
+        new_task = make_task(
+            headline="New task",
+            custom_id="task-new",
+        )
+
+        server.create_task(server.ACTIVE_SECTION, new_task)
+
+        # Verify the task has :CREATED: timestamp
+        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        assert len(tasks) == 1
+        assert tasks[0].created != ""
+        # Active timestamp format: <YYYY-MM-DD DDD HH:MM>
+        assert tasks[0].created.startswith("<")
+        assert tasks[0].created.endswith(">")
+
+    def test_update_task_sets_modified_timestamp(
+        self, sample_tasks_file: TasksFileInfo
+    ) -> None:
+        """
+        Given an existing task
+        When the task is updated
+        Then :MODIFIED: timestamp should be set with inactive timestamp format
+        """
+        updated_task = make_task(
+            headline="JIRA-1234 Updated headline",
+            custom_id="task-jira-1234",
+            status="TODO",
+        )
+
+        server.update_task("task-jira-1234", updated_task)
+
+        # Verify the task has :MODIFIED: timestamp
+        result = server.find_task("task-jira-1234")
+        assert result is not None
+        task, _, _, _ = result
+        assert task.modified != ""
+        # Inactive timestamp format: [YYYY-MM-DD DDD HH:MM]
+        assert task.modified.startswith("[")
+        assert task.modified.endswith("]")
+
+    def test_update_task_to_done_sets_closed_timestamp(
+        self, sample_tasks_file: TasksFileInfo
+    ) -> None:
+        """
+        Given a task with status TODO
+        When the task is updated to status DONE
+        Then :CLOSED: timestamp should be set with active timestamp format
+        """
+        done_task = make_task(
+            headline="JIRA-1234 Fix authentication bug",
+            custom_id="task-jira-1234",
+            status="DONE",
+        )
+
+        server.update_task("task-jira-1234", done_task)
+
+        # Verify the task has :CLOSED: timestamp
+        result = server.find_task("task-jira-1234")
+        assert result is not None
+        task, _, _, _ = result
+        assert task.closed != ""
+        # Active timestamp format: <YYYY-MM-DD DDD HH:MM>
+        assert task.closed.startswith("<")
+        assert task.closed.endswith(">")
+
+    def test_reopen_task_clears_closed_timestamp(
+        self, sample_tasks_file: TasksFileInfo
+    ) -> None:
+        """
+        Given a task with status TODO
+        When the task is marked DONE then reopened to TODO
+        Then :CLOSED: timestamp should be cleared
+        """
+        # First mark a TODO task as done (use task-jira-1234 which starts as TODO)
+        done_task = make_task(
+            headline="JIRA-1234 Fix authentication bug",
+            custom_id="task-jira-1234",
+            status="DONE",
+        )
+        server.update_task("task-jira-1234", done_task)
+
+        # Verify it has :CLOSED:
+        result = server.find_task("task-jira-1234")
+        assert result is not None
+        task, _, _, _ = result
+        assert task.closed != ""
+
+        # Now reopen it
+        reopened_task = make_task(
+            headline="JIRA-1234 Fix authentication bug",
+            custom_id="task-jira-1234",
+            status="TODO",
+        )
+        server.update_task("task-jira-1234", reopened_task)
+
+        # Verify :CLOSED: was cleared
+        result = server.find_task("task-jira-1234")
+        assert result is not None
+        task, _, _, _ = result
+        assert task.closed == ""
+
+    def test_update_done_task_sets_modified_but_not_closed(
+        self, sample_tasks_file: TasksFileInfo
+    ) -> None:
+        """
+        Given a task transitioning from TODO to DONE
+        When the task is later updated (but stays DONE)
+        Then :MODIFIED: should be updated but :CLOSED: should be preserved
+        """
+        # First mark a TODO task as done (use task-new-feature which starts as TODO)
+        done_task = make_task(
+            headline="Implement new feature",
+            custom_id="task-new-feature",
+            status="DONE",
+        )
+        server.update_task("task-new-feature", done_task)
+
+        # Get the original :CLOSED: timestamp
+        result = server.find_task("task-new-feature")
+        assert result is not None
+        task, _, _, _ = result
+        original_closed = task.closed
+        assert original_closed != ""
+
+        # Update the task content (but keep it DONE)
+        updated_done_task = make_task(
+            headline="Implement new feature - updated description",
+            custom_id="task-new-feature",
+            status="DONE",
+        )
+        server.update_task("task-new-feature", updated_done_task)
+
+        # Verify :MODIFIED: was set but :CLOSED: was preserved
+        result = server.find_task("task-new-feature")
+        assert result is not None
+        task, _, _, _ = result
+        assert task.modified != ""
+        # :CLOSED: should be preserved when task stays DONE
+        assert task.closed == original_closed

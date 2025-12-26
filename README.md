@@ -263,6 +263,9 @@ When creating tasks via `create_task`, provide the task content as an org-mode s
 :PROPERTIES:
    :ID:       UUID-GENERATED-AUTOMATICALLY
    :CUSTOM_ID: task-gh-28
+   :CREATED:  <YYYY-MM-DD DDD HH:MM>  (set automatically on creation)
+   :MODIFIED: [YYYY-MM-DD DDD HH:MM]  (updated automatically on modification)
+   :CLOSED:   <YYYY-MM-DD DDD HH:MM>  (set automatically when marked DONE)
 :END:
 
 *** Task items [/]
@@ -270,6 +273,15 @@ When creating tasks via `create_task`, provide the task content as an org-mode s
 - [ ] Second item
 ```
 ````
+
+**Timestamp Properties** (managed automatically by the MCP server):
+- `:CREATED:` - Active timestamp `<>` set when task is first created
+- `:MODIFIED:` - Inactive timestamp `[]` updated on every task update
+- `:CLOSED:` - Active timestamp `<>` set when task is marked DONE (standard org-mode property)
+  - Preserved when updating a DONE task that stays DONE
+  - Cleared when reopening a DONE task back to TODO
+
+Note: Timestamps are naive (no timezone) as org-mode does not support timezone information.
 
 ```markdown
 ### Journal Entry Parameters

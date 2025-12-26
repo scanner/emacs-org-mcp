@@ -36,7 +36,9 @@ class TestEnvironmentVariableConfiguration:
         assert server.COMPLETED_SECTION == "Completed Tasks"
         assert server.HIGH_LEVEL_SECTION == "High Level Tasks (in order)"
 
-    def test_custom_values_from_environment(self, mocker: MockerFixture) -> None:
+    def test_custom_values_from_environment(
+        self, mocker: MockerFixture
+    ) -> None:
         """
         Given custom environment variables are set
         When the server module is loaded

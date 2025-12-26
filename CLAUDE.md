@@ -132,6 +132,8 @@ There is also a `* High Level Tasks (in order)` section with a checklist overvie
 :PROPERTIES:
    :ID:       C79031AC-94FE-4FDD-BBBF-7D3EE1A881E9
    :CUSTOM_ID: task-gh-28
+   :CREATED:  <2025-12-26 Fri 01:45>
+   :MODIFIED: [2025-12-26 Fri 02:30]
 :END:
 
 *** Description
@@ -159,18 +161,28 @@ Additional notes, code examples, etc.
 :PROPERTIES:
    :ID:       A1B2C3D4-E5F6-7890-ABCD-EF1234567890
    :CUSTOM_ID: task-gh-27
+   :CREATED:  <2025-12-20 Fri 10:00>
+   :MODIFIED: [2025-12-25 Wed 14:30]
+   :CLOSED:   <2025-12-25 Wed 14:30>
 :END:
 ...
 ```
 
 Key elements:
 - `:PROPERTIES:` drawer immediately after heading with:
-  - `:ID:` UUID for org-mode compatibility (auto-generated)
+  - `:ID:` UUID for org-mode compatibility (auto-generated if not present)
   - `:CUSTOM_ID: task-<identifier>` for stable linking
+  - `:CREATED:` Active timestamp `<>` set automatically when task is created
+  - `:MODIFIED:` Inactive timestamp `[]` updated automatically on every modification
+  - `:CLOSED:` Active timestamp `<>` set automatically when task is marked DONE (standard org-mode property)
+    - Preserved when updating a DONE task that stays DONE
+    - Cleared when reopening a DONE task back to TODO
 - `*** Description` for task description
 - `*** Task items [/]` with checkbox list (progress cookie auto-updates)
 - Subsections at `***` level: Description, Related Issues, Related PRs, Task items, Notes
 - Code blocks: `#+begin_src lang` / `#+end_src`
+
+**Note on timestamps**: All timestamps are naive (no timezone) as org-mode does not support timezone information. Timestamps reflect the local timezone of the Emacs instance.
 
 ## Journal Format Reference
 
