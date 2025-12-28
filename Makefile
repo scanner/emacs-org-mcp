@@ -1,8 +1,10 @@
 ROOT_DIR := $(shell git rev-parse --show-toplevel 2>/dev/null || pwd)
 MCP_NAME := emacs-org
 SERVER_SCRIPT := server.py
+UV_PATH := $(shell which uv)
+CLAUDE_CONFIG := $(HOME)/Library/Application Support/Claude/claude_desktop_config.json
 
-.PHONY: setup sync lint black test mcp-install mcp-uninstall mcp-status clean help
+.PHONY: setup sync lint black test mcp-install mcp-uninstall mcp-status mcp-install-desktop mcp-uninstall-desktop clean help install uninstall
 
 setup: ## Initial project setup: install dependencies and pre-commit hooks
 	echo "Installing dependencies (including dev)..."; \
@@ -51,6 +53,29 @@ mcp-uninstall: ## Uninstall this MCP server from Claude Code
 mcp-status: ## Show if the MCP server is configured in Claude Code
 	@echo "Checking MCP server status..."
 	@claude mcp list 2>/dev/null | grep -E "$(MCP_NAME)" || echo "MCP server '$(MCP_NAME)' is not installed"
+
+mcp-install-desktop: ## Install this MCP server in Claude Desktop (macOS)
+	@echo "Installing MCP server '$(MCP_NAME)' to Claude Desktop..."
+	@mkdir -p "$(dir $(CLAUDE_CONFIG))"
+	@uv run $(ROOT_DIR)/scripts/install_desktop.py \
+		install \
+		"$(CLAUDE_CONFIG)" \
+		"$(MCP_NAME)" \
+		"$(UV_PATH)" \
+		"$(ROOT_DIR)" \
+		"$(SERVER_SCRIPT)"
+	@echo "Configuration updated. Restart Claude Desktop to use the MCP server."
+
+mcp-uninstall-desktop: ## Uninstall this MCP server from Claude Desktop (macOS)
+	@echo "Uninstalling MCP server '$(MCP_NAME)' from Claude Desktop..."
+	@uv run $(ROOT_DIR)/scripts/install_desktop.py \
+		uninstall \
+		"$(CLAUDE_CONFIG)" \
+		"$(MCP_NAME)"
+	@echo "MCP server uninstalled. Restart Claude Desktop to apply changes."
+
+install: mcp-install mcp-install-desktop
+uninstall: mcp-uninstall mcp-uninstall-desktop
 
 run: ## Run the MCP server directly (for debugging)
 	uv run $(SERVER_SCRIPT)

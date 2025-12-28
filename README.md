@@ -149,6 +149,8 @@ Or edit `~/.claude.json`:
 
 To instruct Claude to use this MCP server for task and journal management, add the following to your `~/.claude/CLAUDE.md` file.
 
+> **⚠️ CRITICAL**: The most important instruction to include in your CLAUDE.md is the requirement to **always preview before creating or updating** entries. See the "Preview Before Update Workflow" and "Preview Before Create Workflow" sections below for the exact workflow requirements.
+
 ### MCP Tool Names
 
 When the MCP server is registered as `emacs-org`, Claude sees these tools:
@@ -203,14 +205,17 @@ Add this near the top of your `~/.claude/CLAUDE.md`:
 
 ### Preview Before Update Workflow
 
-**IMPORTANT**: When updating tasks or journal entries, ALWAYS use the preview tool first to show the user what will change before making modifications:
+**🔴 CRITICAL REQUIREMENT**: When updating tasks or journal entries, you **MUST ALWAYS** use the preview tool first to show the user what will change before making any modifications. **NEVER** call update functions without first showing a preview.
 
-1. Call `preview_task_update` or `preview_journal_update` with the proposed changes
-2. The preview shows a diff of what will change (without modifying any files)
-3. Ask the user to confirm the changes look correct
-4. Only after user approval, call `update_task` or `update_journal_entry` with the same parameters
+**Required workflow for updates**:
 
-Example workflow:
+1. ✅ **FIRST**: Call `preview_task_update` or `preview_journal_update` with the proposed changes
+2. ✅ **SHOW**: The preview displays a diff of what will change (without modifying any files)
+3. ✅ **ASK**: Explicitly ask the user to confirm the changes look correct
+4. ✅ **WAIT**: Wait for explicit user approval ("yes", "ok", "proceed", etc.)
+5. ✅ **THEN**: Only after approval, call `update_task` or `update_journal_entry` with the same parameters
+
+**Example workflow**:
 ```
 Claude: Let me show you what changes I'll make to the task...
 [calls preview_task_update]
@@ -227,30 +232,44 @@ User: yes
 [calls update_task]
 ```
 
-This ensures the user can verify changes before they are written to disk.
+**Why this matters**: This ensures the user can verify changes before they are written to disk, preventing unwanted modifications to their org-mode files.
 
 ### Preview Before Create Workflow
 
-When creating new tasks or journal entries, ALWAYS show the user the proposed content before calling the create tool:
+**🔴 CRITICAL REQUIREMENT**: When creating new tasks or journal entries, you **MUST ALWAYS** show the user the complete proposed content before calling the create tool. **NEVER** create entries without first showing a preview.
 
-1. Format the proposed entry as an org-mode code block in your response
-2. Ask the user to confirm the content looks correct
-3. Only after user approval, call `create_task` or `create_journal_entry`
+**Required workflow for creation**:
 
-Example workflow:
+1. ✅ **FIRST**: Format the complete proposed entry as an org-mode code block in your response
+2. ✅ **SHOW**: Display exactly what will be created, including all formatting, headings, and properties
+3. ✅ **ASK**: Explicitly ask the user to confirm the content looks correct
+4. ✅ **WAIT**: Wait for explicit user approval ("yes", "ok", "proceed", etc.)
+5. ✅ **THEN**: Only after approval, call `create_task` or `create_journal_entry`
+
+**Example workflow**:
 ```
 Claude: Here's the journal entry I'll create:
 
+## Preview of Journal Entry to Create:
+
+```org
 ** 14:30 GH-28 Completed API migration
 - Migrated all endpoints to new schema
 - Updated tests and documentation
+```
+
+**Parameters:**
+- **Time**: 14:30
+- **Headline**: "GH-28 Completed API migration"
+- **Tags**: none
+- **Content**: 2 bullet points
 
 Does this look correct?
 User: yes
 [calls create_journal_entry]
 ```
 
-This gives the user a clear, readable preview before content is written to disk.
+**Why this matters**: This gives the user a clear, readable preview before content is written to disk, ensuring the entry matches their expectations and follows proper org-mode formatting.
 
 ### Task Entry Format for MCP
 
