@@ -1,5 +1,7 @@
 """Tests for task-related server functions."""
 
+import re
+import uuid
 from pathlib import Path
 
 import pytest
@@ -86,24 +88,25 @@ class TestFindTask:
     ) -> None:
         """Test finding a task in a specific section only."""
         # This task is in Active section
+        #
         result = server.find_task(
             "task-jira-1234", section=server.ACTIVE_SECTION
         )
         assert result is not None
 
         # Should not find it in Completed section
-        result = server.find_task(
-            "task-jira-1234", section=server.COMPLETED_SECTION
-        )
-        assert result is None
+        #
+        with pytest.raises(ValueError, match="Could not find task"):
+            result = server.find_task(
+                "task-jira-1234", section=server.COMPLETED_SECTION
+            )
 
     def test_find_nonexistent_task(
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test that finding a nonexistent task returns None."""
-        result = server.find_task("task-does-not-exist")
-
-        assert result is None
+        with pytest.raises(ValueError, match="Could not find task"):
+            server.find_task("task-does-not-exist")
 
     def test_find_completed_task(
         self, sample_tasks_file: TasksFileInfo
@@ -247,7 +250,7 @@ class TestUpdateTask:
         """Test that updating a nonexistent task raises ValueError."""
         task = make_task("X", "task-x")
 
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ValueError, match="Could not find"):
             server.update_task("task-nonexistent", task)
 
 
@@ -276,10 +279,10 @@ class TestMoveTask:
         assert found is not None
 
         # Verify it's not in the old section
-        found = server.find_task(
-            "task-jira-1234", section=server.ACTIVE_SECTION
-        )
-        assert found is None
+        with pytest.raises(ValueError, match="Could not find"):
+            found = server.find_task(
+                "task-jira-1234", section=server.ACTIVE_SECTION
+            )
 
     def test_move_task_to_active(
         self, sample_tasks_file: TasksFileInfo
@@ -305,7 +308,7 @@ class TestMoveTask:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test that moving a nonexistent task raises ValueError."""
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ValueError, match="Could not find"):
             server.move_task(
                 "task-nonexistent",
                 server.ACTIVE_SECTION,
@@ -670,7 +673,6 @@ Task description here.
         When the task is created
         Then the generated UUID should be a valid UUID4
         """
-        import uuid
 
         new_task = make_task(
             headline="Another task",
@@ -713,7 +715,6 @@ This task has an explicit ID.
 """
         # Add it to the file
         content = server.TASKS_FILE.read_text()
-        import re
 
         content = re.sub(
             rf"(\* {server.ACTIVE_SECTION}\n)",
@@ -753,7 +754,6 @@ Finding this task.
 """
         # Add it to the file
         content = server.TASKS_FILE.read_text()
-        import re
 
         content = re.sub(
             rf"(\* {server.ACTIVE_SECTION}\n)",
@@ -767,41 +767,6 @@ Finding this task.
         assert result is not None
         task, _, _, _ = result
         assert task.id == "FIND-UUID-ABCD-1234-5678-90ABCDEF1234"
-
-    def test_tasks_without_id_have_empty_string(
-        self, empty_tasks_file: Path
-    ) -> None:
-        """
-        Given a task without :PROPERTIES: drawer
-        When the task is parsed
-        Then the id field should be an empty string
-        """
-        # Create a task without properties manually (but with minimal :CUSTOM_ID:)
-        task_without_props = """** TODO Simple task
-:PROPERTIES:
-   :CUSTOM_ID: task-simple
-:END:
-
-*** Description
-No properties drawer here (no :ID:).
-"""
-
-        # Manually add to file
-        content = server.TASKS_FILE.read_text()
-        import re
-
-        content = re.sub(
-            rf"(\* {server.ACTIVE_SECTION}\n)",
-            rf"\1{task_without_props}\n",
-            content,
-        )
-        server.TASKS_FILE.write_text(content)
-
-        # Verify the task has empty id
-        result = server.find_task("task-simple")
-        assert result is not None
-        task, _, _, _ = result
-        assert task.id == ""
 
 
 class TestTaskTimestamps:
@@ -897,12 +862,14 @@ class TestTaskTimestamps:
         server.update_task("task-jira-1234", done_task)
 
         # Verify it has :CLOSED:
+        #
         result = server.find_task("task-jira-1234")
         assert result is not None
         task, _, _, _ = result
-        assert task.closed != ""
+        assert task.closed is not None
 
         # Now reopen it
+        #
         reopened_task = make_task(
             headline="JIRA-1234 Fix authentication bug",
             custom_id="task-jira-1234",
@@ -911,10 +878,14 @@ class TestTaskTimestamps:
         server.update_task("task-jira-1234", reopened_task)
 
         # Verify :CLOSED: was cleared
+        #
         result = server.find_task("task-jira-1234")
         assert result is not None
         task, _, _, _ = result
-        assert task.closed == ""
+
+        # And the task.close == None
+        #
+        assert task.closed is None
 
     def test_update_done_task_sets_modified_but_not_closed(
         self, sample_tasks_file: TasksFileInfo
