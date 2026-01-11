@@ -29,6 +29,8 @@ def install_server(config_path, mcp_name, uv_path, root_dir, server_script):
             "ACTIVE_SECTION": "Tasks",
             "COMPLETED_SECTION": "Completed Tasks",
             "HIGH_LEVEL_SECTION": "High Level Tasks (in order)",
+            "EMACS_EDIFF_APPROVAL": "false",  # Set to "true" to enable visual approval
+            # "EMACSCLIENT_PATH": "/path/to/emacsclient",  # Optional: custom emacsclient path
         },
     }
 

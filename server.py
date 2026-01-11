@@ -12,8 +12,12 @@ Task and journal content format follows the conventions in ~/.claude/CLAUDE.md
 
 import difflib
 import json
+import logging
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -32,6 +36,9 @@ from orgmunge.classes import Heading
 
 ORG_DIR = Path(os.environ.get("ORG_DIR", Path.home() / "org"))
 TASKS_FILE = ORG_DIR / "tasks.org"
+EMACSCLIENT_PATH = Path(
+    os.environ.get("EMACSCLIENT_PATH", "/usr/local/bin/emacsclient")
+)
 JOURNAL_DIR = Path(os.environ.get("JOURNAL_DIR", ORG_DIR / "journal"))
 TODO_STATES = (v for k, v in Org.get_todos()["todo_states"].items())
 DONE_STATES = (v for k, v in Org.get_todos()["done_states"].items())
@@ -49,6 +56,21 @@ HIGH_LEVEL_SECTION = os.environ.get(
 )
 
 server = Server("emacs-org-mode")
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GlobalState:
+    """
+    A way to hold global state that can be modified from code without
+    requiring the use of a `global` statement.
+    """
+
+    elisp_loaded: bool = False
+
+
+global_state = GlobalState()
+
 
 # =============================================================================
 # Timestamp Utilities
@@ -149,6 +171,162 @@ def format_simple_diff(old_content: str, new_content: str) -> str:
                     diff_lines.append(f"+ {line}")
 
     return "\n".join(diff_lines) if diff_lines else "(no changes)"
+
+
+# =============================================================================
+# Ediff Approval Integration
+# =============================================================================
+
+
+###############################################################################
+#
+def get_emacsclient_path() -> str | None:
+    """
+    Get path to emacsclient, checking env var first.
+
+    Returns:
+        Path to emacsclient executable, or None if not found
+    """
+    # Check configured path
+    configured_path = os.getenv("EMACSCLIENT_PATH")
+    if configured_path and Path(configured_path).exists():
+        return configured_path
+
+    # Fall back to PATH search
+    return shutil.which("emacsclient")
+
+
+###############################################################################
+#
+def is_ediff_approval_enabled() -> bool:
+    """
+    Check if ediff approval is enabled and available.
+
+    Returns:
+        True if EMACS_EDIFF_APPROVAL is enabled and emacsclient is available
+    """
+    if os.getenv("EMACS_EDIFF_APPROVAL", "").lower() not in (
+        "true",
+        "1",
+        "yes",
+    ):
+        return False
+
+    emacsclient = get_emacsclient_path()
+    if emacsclient is None:
+        logger.warning("EMACS_EDIFF_APPROVAL enabled but emacsclient not found")
+        return False
+
+    return True
+
+
+###############################################################################
+#
+def ensure_elisp_loaded(force: bool = False) -> None:
+    """
+    Load emacs_ediff.el if not already loaded.
+
+    Args:
+        force: If True, reload even if already loaded (useful for development)
+    """
+    if global_state.elisp_loaded and not force:
+        return
+
+    emacsclient = get_emacsclient_path()
+    if not emacsclient:
+        return
+
+    elisp_path = Path(__file__).parent / "emacs_ediff.el"
+    if not elisp_path.exists():
+        logger.warning("emacs_ediff.el not found at %s", elisp_path)
+        return
+
+    try:
+        subprocess.run(
+            [emacsclient, "--eval", f'(load-file "{elisp_path}")'],
+            capture_output=True,
+            check=True,
+            timeout=5,
+        )
+        global_state.elisp_loaded = True
+        logger.info("Loaded emacs_ediff.el")
+    except Exception as e:
+        logger.warning("Failed to load emacs_ediff.el: %r", e)
+
+
+###############################################################################
+#
+def request_ediff_approval(
+    old_content: str, new_content: str, context_name: str
+) -> tuple[bool, str]:
+    """
+    Present old vs new content in Emacs ediff for approval. The default for
+    various failure and misconfiguration is to basically consider the new
+    content approved.
+
+    XXX More work should be done to report problems to the user
+
+    Args:
+        old_content: Current content (empty string for creates)
+        new_content: Proposed new content
+        context_name: Context identifier for filenames (e.g., "gh-127", "20250107-1430")
+
+    Returns:
+        (approved, final_content) where final_content may be user-edited
+    """
+    if not is_ediff_approval_enabled():
+        return (True, new_content)
+
+    emacsclient = get_emacsclient_path()
+    if not emacsclient:
+        return (True, new_content)
+
+    ensure_elisp_loaded()
+
+    # Create temp directory with context-specific files
+    #
+    with tempfile.TemporaryDirectory(prefix="emacs-org-mcp-ediff-") as tempdir:
+        tempdir_path = Path(tempdir)
+        old_file = tempdir_path / f"old-{context_name}.org"
+        new_file = tempdir_path / f"new-{context_name}.org"
+
+        try:
+            old_file.write_text(old_content, encoding="utf-8")
+            new_file.write_text(new_content, encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    emacsclient,
+                    "--eval",
+                    f'(org-mcp-ediff-approve "{old_file}" "{new_file}")',
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=300,  # 5 minute timeout
+            )
+
+            decision = result.stdout.strip().strip('"')
+
+            if decision == "approved":
+                final_content = new_file.read_text(encoding="utf-8")
+                return (True, final_content)
+            return (False, new_content)
+
+        except subprocess.TimeoutExpired:
+            logger.warning("Ediff approval timed out, auto-rejecting")
+            return (False, new_content)
+        except subprocess.CalledProcessError as e:
+            logger.warning(
+                "Ediff approval failed with exit code %d, auto-approving",
+                e.returncode,
+            )
+            logger.warning("stdout: %s", e.stdout)
+            logger.warning("stderr: %s", e.stderr)
+            return (True, new_content)
+        except Exception as e:
+            logger.warning("Ediff approval failed: %r, auto-approving", e)
+            return (True, new_content)
 
 
 ###############################################################################
@@ -258,61 +436,6 @@ def format_journal_update_result(
         "",
         "Final:",
         new_entry.to_org(),
-    ]
-    return "\n".join(lines)
-
-
-###############################################################################
-#
-def format_task_preview(
-    old_task: "Task", new_content: str, old_section: str, new_section: str
-) -> str:
-    """
-    Format a preview of task changes without modifying the file.
-
-    Args:
-        old_task: The existing task
-        new_content: Proposed new content
-        old_section: Current section name
-        new_section: Target section name
-
-    Returns:
-        Formatted diff showing proposed changes
-    """
-    lines = []
-
-    if old_section != new_section:
-        lines.append(f"Preview: Task will move {old_section} → {new_section}")
-    else:
-        lines.append(f"Preview: Task in {new_section}")
-
-    lines.append("")
-    lines.append("Proposed changes:")
-    lines.append(format_simple_diff(old_task.content, new_content))
-
-    return "\n".join(lines)
-
-
-###############################################################################
-#
-def format_journal_preview(
-    old_entry: "JournalEntry", new_entry: "JournalEntry"
-) -> str:
-    """
-    Format a preview of journal entry changes without modifying the file.
-
-    Args:
-        old_entry: The existing journal entry
-        new_entry: Proposed new entry
-
-    Returns:
-        Formatted diff showing proposed changes
-    """
-    lines = [
-        f"Preview: Journal entry at {old_entry.time} on {old_entry.file_date}",
-        "",
-        "Proposed changes:",
-        format_simple_diff(old_entry.to_org(), new_entry.to_org()),
     ]
     return "\n".join(lines)
 
@@ -979,6 +1102,34 @@ def create_task(section_name: str, task_entry: str) -> tuple[str, str]:
     if "CREATED" not in new_task.properties:
         new_task.properties["CREATED"] = get_current_timestamp(active=True)
 
+    # Generate org string for the new task
+    new_task_org = heading_to_org_string(new_task)
+
+    # Get context name from task (custom_id or fallback)
+    custom_id = new_task.properties.get("CUSTOM_ID", "new-task")
+    context_name = custom_id.lstrip("task-")  # e.g., "gh-127" or "new-task"
+
+    # Request approval via ediff
+    approved, final_content = request_ediff_approval(
+        old_content="",  # Empty for create
+        new_content=new_task_org,
+        context_name=context_name,
+    )
+
+    if not approved:
+        raise ValueError("User rejected task creation")
+
+    # If edited, re-parse the final content and re-apply automatic properties
+    if final_content != new_task_org:
+        new_task = parse_task_entry(final_content)
+        # Re-apply automatic properties
+        if not hasattr(new_task, "properties") or not new_task.properties:
+            new_task.properties = {}
+        if "ID" not in new_task.properties:
+            new_task.properties["ID"] = str(uuid.uuid4()).upper()
+        if "CREATED" not in new_task.properties:
+            new_task.properties["CREATED"] = get_current_timestamp(active=True)
+
     target_section.add_child(new_task, new=True)
 
     # Add to High Level Tasks checklist if creating in active section
@@ -1037,24 +1188,65 @@ def update_task(
 
     if task.created and "CREATED" not in new_task.properties:
         new_task.properties["CREATED"] = task.created
-    if task.closed and "CLOSED" not in new_task.properties:
-        new_task.properties["CLOSED"] = task.closed
 
+    # Handle CLOSED property based on status transitions
     # TODO -> DONE: set :CLOSED:
     # DONE -> TODO: remove :CLOSED:
-    # any other transition, :CLOSED: is not modified.
+    # DONE -> DONE: preserve existing :CLOSED:
     #
     if old_status == "TODO":
         if new_task.headline.todo == "DONE":
             # Task has moved from TODO -> DONE, set :CLOSED:
-            #
             new_task.properties["CLOSED"] = get_current_timestamp(active=True)
-    else:  # task.headline.todo == "DONE"
+    elif old_status == "DONE":
         if new_task.headline.todo == "TODO":
-            # The task has moved from "DONE" to "TODO". Remove :CLOSED: if it
-            # is set
-            #
-            del new_task.properties["CLOSED"]
+            # The task has moved from "DONE" to "TODO". Remove :CLOSED: if set
+            if "CLOSED" in new_task.properties:
+                del new_task.properties["CLOSED"]
+        else:
+            # DONE -> DONE: preserve existing CLOSED if not in new properties
+            if task.closed and "CLOSED" not in new_task.properties:
+                new_task.properties["CLOSED"] = task.closed
+
+    # Get old task org string for approval
+    old_task_org = heading_to_org_string(old_heading)
+    new_task_org = heading_to_org_string(new_task)
+
+    # Get context name from old task (should have custom_id)
+    custom_id = task.custom_id or "unknown-task"
+    context_name = custom_id.lstrip("task-")  # e.g., "gh-127"
+
+    # Request approval via ediff
+    approved, final_content = request_ediff_approval(
+        old_content=old_task_org,
+        new_content=new_task_org,
+        context_name=context_name,
+    )
+
+    if not approved:
+        raise ValueError("User rejected task update")
+
+    # If edited, re-parse and re-apply automatic properties
+    if final_content != new_task_org:
+        new_task = parse_task_entry(final_content)
+        new_status = new_task.headline.todo
+        # Re-apply automatic properties
+        new_task.properties["MODIFIED"] = get_current_timestamp(active=False)
+        if task.created and "CREATED" not in new_task.properties:
+            new_task.properties["CREATED"] = task.created
+
+        # Handle CLOSED property based on status transitions
+        if old_status == "TODO" and new_status == "DONE":
+            # TODO -> DONE: set CLOSED
+            new_task.properties["CLOSED"] = get_current_timestamp(active=True)
+        elif old_status == "DONE" and new_status == "TODO":
+            # DONE -> TODO: remove CLOSED
+            if "CLOSED" in new_task.properties:
+                del new_task.properties["CLOSED"]
+        elif old_status == "DONE" and new_status == "DONE":
+            # DONE -> DONE: preserve existing CLOSED
+            if task.closed and "CLOSED" not in new_task.properties:
+                new_task.properties["CLOSED"] = task.closed
 
     # Determine target section based on new status
     if new_status == "DONE":
@@ -1411,12 +1603,27 @@ def create_journal_entry(
     )
     entry_text = entry.to_org()
 
+    # Context: date + time (e.g., "20250107-1430")
+    context_name = (
+        f"{target_date.strftime('%Y%m%d')}-{time_str.replace(':', '')}"
+    )
+
+    # Request approval via ediff
+    approved, final_entry_text = request_ediff_approval(
+        old_content="",  # Empty for create
+        new_content=entry_text,
+        context_name=context_name,
+    )
+
+    if not approved:
+        raise ValueError("User rejected journal entry creation")
+
     if file_path.exists():
         existing = file_path.read_text(encoding="utf-8").rstrip()
-        new_content = f"{existing}\n\n{entry_text}"
+        new_content = f"{existing}\n\n{final_entry_text}"
     else:
         date_heading = target_date.strftime("* %Y-%m-%d")
-        new_content = f"{date_heading}\n\n{entry_text}"
+        new_content = f"{date_heading}\n\n{final_entry_text}"
 
     backup_file(file_path)
     write_file(file_path, new_content)
@@ -1478,7 +1685,24 @@ def update_journal_entry(
         file_date=file_path.name,
     )
 
-    new_entry_lines = new_entry.to_org().split("\n")
+    old_entry_org = old_entry.to_org()
+    new_entry_org = new_entry.to_org()
+
+    # Context: date + time (e.g., "20250107-1430")
+    date_str = file_path.stem if file_path.suffix == ".org" else file_path.name
+    context_name = f"{date_str}-{time_str.replace(':', '')}"
+
+    # Request approval via ediff
+    approved, final_entry_text = request_ediff_approval(
+        old_content=old_entry_org,
+        new_content=new_entry_org,
+        context_name=context_name,
+    )
+
+    if not approved:
+        raise ValueError("User rejected journal entry update")
+
+    new_entry_lines = final_entry_text.split("\n")
     new_lines = lines[:entry_start] + new_entry_lines + lines[entry_end:]
 
     backup_file(file_path)
@@ -1659,24 +1883,6 @@ async def list_tools():
             },
         ),
         Tool(
-            name="preview_task_update",
-            description="Preview changes to a task WITHOUT modifying the file. Shows diff of what would change. Use this before update_task to verify changes.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "identifier": {
-                        "type": "string",
-                        "description": "Task identifier to find the task",
-                    },
-                    "task_entry": {
-                        "type": "string",
-                        "description": "Complete new task in org format (to compare against current)",
-                    },
-                },
-                "required": ["identifier", "task_entry"],
-            },
-        ),
-        Tool(
             name="move_task",
             description="Move a task between sections (e.g., Active to Completed) without modifying content.",
             inputSchema={
@@ -1817,47 +2023,6 @@ async def list_tools():
             },
         ),
         Tool(
-            name="preview_journal_update",
-            description="Preview changes to a journal entry WITHOUT modifying the file. Shows diff of what would change. Use this before update_journal_entry to verify changes.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "date": {
-                        "type": "string",
-                        "description": "Date in YYYY-MM-DD format",
-                    },
-                    "line_number": {
-                        "type": "integer",
-                        "description": "Line number of entry to preview (from list_journal_entries)",
-                    },
-                    "time": {
-                        "type": "string",
-                        "description": "New time in HH:MM format",
-                    },
-                    "headline": {
-                        "type": "string",
-                        "description": "New headline",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "New body content",
-                    },
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "New tags",
-                    },
-                },
-                "required": [
-                    "date",
-                    "line_number",
-                    "time",
-                    "headline",
-                    "content",
-                ],
-            },
-        ),
-        Tool(
             name="search_journal",
             description="Search journal entries by query. Returns complete matching entries.",
             inputSchema={
@@ -1923,30 +2088,6 @@ async def call_tool(name: str, arguments: dict):
                 )
                 output = format_task_update_result(
                     old_task, new_content, moved, old_section, new_section
-                )
-                return [TextContent(type="text", text=output)]
-
-            case "preview_task_update":
-                try:
-                    result = find_task(arguments["identifier"])
-                except ValueError:
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Task '{arguments['identifier']}' not found",
-                        )
-                    ]
-                task, _, _, _ = result
-                new_heading = parse_task_entry(arguments["task_entry"])
-                new_content = heading_to_org_string(new_heading)
-                new_status = new_heading.headline.todo
-                new_section = (
-                    COMPLETED_SECTION
-                    if new_status == "DONE"
-                    else ACTIVE_SECTION
-                )
-                output = format_task_preview(
-                    task, new_content, task.section, new_section
                 )
                 return [TextContent(type="text", text=output)]
 
@@ -2019,38 +2160,6 @@ async def call_tool(name: str, arguments: dict):
                 output = format_journal_update_result(
                     old_entry, new_entry, result_date
                 )
-                return [TextContent(type="text", text=output)]
-
-            case "preview_journal_update":
-                target_date = date.fromisoformat(arguments["date"])
-                file_path = get_journal_path(target_date)
-                entries = parse_journal_entries(file_path)
-
-                # Find entry by line number
-                existing_entry: JournalEntry | None = None
-                for entry in entries:
-                    if entry.line_number == arguments["line_number"]:
-                        existing_entry = entry
-                        break
-
-                if existing_entry is None:
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Entry at line {arguments['line_number']} not found",
-                        )
-                    ]
-
-                # Create new entry object for comparison
-                proposed_entry = JournalEntry(
-                    time=arguments["time"],
-                    headline=arguments["headline"],
-                    tags=arguments.get("tags", []),
-                    content=arguments["content"],
-                    line_number=arguments["line_number"],
-                    file_date=file_path.name,
-                )
-                output = format_journal_preview(existing_entry, proposed_entry)
                 return [TextContent(type="text", text=output)]
 
             case "search_journal":

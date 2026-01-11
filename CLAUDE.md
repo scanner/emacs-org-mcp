@@ -64,11 +64,13 @@ Line length is set to 100 characters. E501 (line too long) is ignored in ruff si
 
 ```
 emacs-task-journal-mcp/
-├── CLAUDE.md           # This file
-├── README.md           # User documentation
-├── pyproject.toml      # uv/Python project config
-├── uv.lock             # Lock file
-└── server.py           # Main MCP server implementation
+├── CLAUDE.md              # This file
+├── README.md              # User documentation
+├── pyproject.toml         # uv/Python project config
+├── uv.lock                # Lock file
+├── server.py              # Main MCP server implementation
+├── emacs_ediff.el         # Emacs Lisp for ediff approval workflow
+└── manual_test_ediff.py   # Manual test script for ediff approval
 ```
 
 ## Key Design Decisions
@@ -97,6 +99,20 @@ The `create_task` and `update_task` tools accept `task_entry` as a complete org-
 
 When `update_task` is called and the TODO state changes (e.g., `TODO` → `DONE`), the task automatically moves to the appropriate section (Active → Completed or vice versa).
 
+### Ediff Approval (Optional)
+
+When `EMACS_EDIFF_APPROVAL=true` is set, create/update operations present changes in Emacs ediff before applying them:
+- Opens a new Emacs frame with side-by-side diff (Buffer A: current, Buffer B: proposed)
+- Control buffer appears below the diff buffers in the same frame
+- User can edit the proposed changes (Buffer B) before accepting
+- Approval keys (in control buffer only):
+  - `C-c C-y` - Approve changes
+  - `C-c C-k` - Reject changes
+  - `q` - Quit (approves by default)
+- Frame and buffers automatically close after decision
+- Falls back to auto-approve if emacsclient unavailable
+- Implementation: `emacs_ediff.el` + Python helpers in `server.py`
+
 ## File Locations
 
 | File | Path | Description |
@@ -115,6 +131,8 @@ All settings can be overridden via environment variables:
 | `ACTIVE_SECTION` | `Tasks` | Section name for active/TODO tasks |
 | `COMPLETED_SECTION` | `Completed Tasks` | Section name for completed/DONE tasks |
 | `HIGH_LEVEL_SECTION` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
+| `EMACS_EDIFF_APPROVAL` | `false` | Enable visual approval via Emacs ediff (`true`/`1`/`yes` to enable) |
+| `EMACSCLIENT_PATH` | _(searches PATH)_ | Custom path to `emacsclient` executable (optional) |
 
 ## Task Format Reference
 
@@ -248,6 +266,27 @@ When making changes, verify:
 6. `move_task` works in both directions
 7. Journal operations work with date-based file naming
 8. Backups are created before file modifications
+
+### Testing Ediff Approval
+
+To manually test the ediff approval workflow:
+
+```bash
+# Test the ediff approval UI
+EMACS_EDIFF_APPROVAL=true uv run manual_test_ediff.py
+```
+
+The test script:
+- Automatically reloads `emacs_ediff.el` for development
+- Opens ediff with sample task content (OAuth2 implementation)
+- Tests approve/reject/quit workflows
+- Reports the final decision and content
+
+Expected behavior:
+- New Emacs frame opens with side-by-side diff
+- Control buffer appears below with instructions
+- `C-c C-y` approves, `C-c C-k` rejects, `q` quits (approves)
+- Frame closes automatically after decision
 
 ## Known Limitations
 

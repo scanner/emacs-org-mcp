@@ -304,6 +304,99 @@ class TestMoveTask:
         )
         assert found is not None
 
+    def test_move_task_without_properties_drawer(
+        self, sample_tasks_file: TasksFileInfo
+    ) -> None:
+        """
+        Test moving a task from Completed to Active when it has no :PROPERTIES: drawer.
+
+        This edge case can occur with older tasks or manually created tasks.
+        """
+        # Create a task without a :PROPERTIES: drawer by directly adding it to the file
+        task_without_props = """** DONE Task without properties
+
+*** Description
+This task has no properties drawer at all.
+"""
+        # Add it to the Completed section
+        content = server.TASKS_FILE.read_text()
+        content = re.sub(
+            rf"(\* {server.COMPLETED_SECTION}\n)",
+            rf"\1{task_without_props}\n",
+            content,
+        )
+        server.TASKS_FILE.write_text(content)
+
+        # Move the task to Active section - should not raise an error
+        result = server.move_task(
+            "Task without properties",  # Find by headline
+            server.COMPLETED_SECTION,
+            server.ACTIVE_SECTION,
+        )
+
+        headline, from_section, to_section = result
+        assert "Task without properties" in headline
+        assert from_section == server.COMPLETED_SECTION
+        assert to_section == server.ACTIVE_SECTION
+
+        # Verify it's in the Active section now
+        found = server.find_task(
+            "Task without properties", section=server.ACTIVE_SECTION
+        )
+        assert found is not None
+        task, _, _, _ = found
+        # Task should still have no custom_id since it had no properties
+        assert task.custom_id is None or task.custom_id == ""
+
+    def test_move_task_missing_closed_property(
+        self, sample_tasks_file: TasksFileInfo
+    ) -> None:
+        """
+        Test moving a task from Completed to Active when it's missing :CLOSED: property.
+
+        This can happen if a task was manually marked DONE without using org-mode's
+        proper commands, or if it was created before CLOSED tracking was implemented.
+        """
+        # Create a DONE task with :PROPERTIES: but no :CLOSED:
+        task_no_closed = """** DONE Task missing CLOSED property
+:PROPERTIES:
+   :CUSTOM_ID: task-no-closed
+:END:
+
+*** Description
+This task is DONE but has no CLOSED timestamp.
+"""
+        # Add it to the Completed section
+        content = server.TASKS_FILE.read_text()
+        content = re.sub(
+            rf"(\* {server.COMPLETED_SECTION}\n)",
+            rf"\1{task_no_closed}\n",
+            content,
+        )
+        server.TASKS_FILE.write_text(content)
+
+        # Move the task to Active section - should not raise an error
+        result = server.move_task(
+            "task-no-closed",
+            server.COMPLETED_SECTION,
+            server.ACTIVE_SECTION,
+        )
+
+        headline, from_section, to_section = result
+        assert "Task missing CLOSED property" in headline
+        assert from_section == server.COMPLETED_SECTION
+        assert to_section == server.ACTIVE_SECTION
+
+        # Verify it's in the Active section now
+        found = server.find_task(
+            "task-no-closed", section=server.ACTIVE_SECTION
+        )
+        assert found is not None
+        task, _, _, _ = found
+        assert task.custom_id == "task-no-closed"
+        # Note: move_task doesn't clear :CLOSED:, so if it didn't have one, it still won't
+        assert task.closed is None or task.closed == ""
+
     def test_move_nonexistent_task_raises(
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
@@ -380,99 +473,6 @@ class TestSearchTasks:
         results_mixed = server.search_tasks("Authentication")
 
         assert len(results_lower) == len(results_upper) == len(results_mixed)
-
-
-class TestPreviewTaskUpdate:
-    """Tests for task preview functionality."""
-
-    def test_preview_shows_diff_without_modifying(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test that preview returns diff without changing the file."""
-        # Get original task
-        original = server.find_task("task-jira-1234")
-        assert original is not None
-        original_task, _, _, _ = original
-        original_content = original_task.content
-
-        # Create updated task content
-        updated_task = make_task(
-            headline="JIRA-1234 Fix authentication bug",
-            custom_id="task-jira-1234",
-            status="TODO",
-            description="Updated description for preview test.",
-            task_items=[
-                (True, "Identify the issue"),
-                (True, "Fix the code"),  # Changed from False to True
-                (False, "Add tests"),
-            ],
-        )
-
-        # Parse and format preview
-        new_heading = server.parse_task_entry(updated_task)
-        new_content = server.heading_to_org_string(new_heading)
-        preview_output = server.format_task_preview(
-            original_task,
-            new_content,
-            server.ACTIVE_SECTION,
-            server.ACTIVE_SECTION,
-        )
-
-        # Verify preview output contains diff markers
-        assert "Preview:" in preview_output
-        assert "Proposed changes:" in preview_output
-
-        # Verify file was NOT modified
-        after = server.find_task("task-jira-1234")
-        assert after is not None
-        after_task, _, _, _ = after
-        assert after_task.content == original_content
-
-    def test_preview_shows_section_move(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test that preview indicates when task will move sections."""
-        original = server.find_task("task-jira-1234")
-        assert original is not None
-        original_task, _, _, _ = original
-
-        # Create DONE version (would move to Completed)
-        done_task = make_task(
-            headline="JIRA-1234 Fix authentication bug",
-            custom_id="task-jira-1234",
-            status="DONE",
-        )
-
-        new_heading = server.parse_task_entry(done_task)
-        new_content = server.heading_to_org_string(new_heading)
-        preview_output = server.format_task_preview(
-            original_task,
-            new_content,
-            server.ACTIVE_SECTION,
-            server.COMPLETED_SECTION,
-        )
-
-        # Verify preview shows section movement
-        assert server.ACTIVE_SECTION in preview_output
-        assert server.COMPLETED_SECTION in preview_output
-        assert "→" in preview_output
-
-    def test_preview_no_changes(self, sample_tasks_file: TasksFileInfo) -> None:
-        """Test preview when content is identical."""
-        original = server.find_task("task-jira-1234")
-        assert original is not None
-        original_task, _, _, _ = original
-
-        # Preview with same content
-        preview_output = server.format_task_preview(
-            original_task,
-            original_task.content,
-            server.ACTIVE_SECTION,
-            server.ACTIVE_SECTION,
-        )
-
-        # Should indicate no changes
-        assert "no changes" in preview_output.lower()
 
 
 class TestFormatSimpleDiff:
@@ -925,3 +925,56 @@ class TestTaskTimestamps:
         assert task.modified != ""
         # :CLOSED: should be preserved when task stays DONE
         assert task.closed == original_closed
+
+    def test_reopen_done_task_without_closed_property(
+        self, sample_tasks_file: TasksFileInfo
+    ) -> None:
+        """
+        Given a DONE task that has no :CLOSED: property
+        When the task is reopened to TODO status
+        Then it should not raise an error (gracefully handle missing :CLOSED:)
+
+        This edge case can occur with manually created tasks or tasks
+        created before CLOSED tracking was implemented.
+        """
+        # Create a DONE task without :CLOSED: property by directly adding to file
+        task_done_no_closed = """** DONE Task done without closed
+:PROPERTIES:
+   :CUSTOM_ID: task-done-no-closed
+:END:
+
+*** Description
+This task is DONE but has no CLOSED timestamp.
+"""
+        # Add it to the Active section
+        content = server.TASKS_FILE.read_text()
+        content = re.sub(
+            rf"(\* {server.ACTIVE_SECTION}\n)",
+            rf"\1{task_done_no_closed}\n",
+            content,
+        )
+        server.TASKS_FILE.write_text(content)
+
+        # Verify the task exists and has no :CLOSED:
+        result = server.find_task("task-done-no-closed")
+        assert result is not None
+        task, _, _, _ = result
+        assert task.status == "DONE"
+        assert task.closed is None or task.closed == ""
+
+        # Now reopen it to TODO - should not raise an error
+        reopened_task = make_task(
+            headline="Task done without closed",
+            custom_id="task-done-no-closed",
+            status="TODO",
+        )
+        server.update_task("task-done-no-closed", reopened_task)
+
+        # Verify it's now TODO and still has no :CLOSED:
+        result = server.find_task("task-done-no-closed")
+        assert result is not None
+        task, _, _, _ = result
+        assert task.status == "TODO"
+        assert task.closed is None or task.closed == ""
+        # Should have :MODIFIED: timestamp
+        assert task.modified != ""

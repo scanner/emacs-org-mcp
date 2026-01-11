@@ -34,14 +34,14 @@ There is also the  benefit of reliability: The MCP handles org-mode parsing corr
 
 - **Task Management** (`~/org/tasks.org`)
   - List, create, update, and search tasks
-  - Preview changes before updating (shows diff without modifying files)
+  - Optional visual approval via Emacs ediff (shows diff in Emacs, allows editing before applying)
   - Move tasks between Active and Completed sections
   - Automatic section movement when task status changes (TODO → DONE)
   - Find tasks by `:CUSTOM_ID:`, JIRA ticket ID, or headline
 
 - **Journal Management** (`~/org/journal/`)
   - List, create, update, and search journal entries
-  - Preview changes before updating (shows diff without modifying files)
+  - Optional visual approval via Emacs ediff (shows diff in Emacs, allows editing before applying)
   - Support for tags (e.g., `:daily_summary:`)
   - Date-based file organization (YYYYMMDD format)
 
@@ -144,30 +144,81 @@ Or edit `~/.claude.json`:
 | `ACTIVE_SECTION` | `Tasks` | Section name for active/TODO tasks |
 | `COMPLETED_SECTION` | `Completed Tasks` | Section name for completed/DONE tasks |
 | `HIGH_LEVEL_SECTION` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
+| `EMACS_EDIFF_APPROVAL` | `false` | Enable visual approval via Emacs ediff (`true`/`1`/`yes` to enable) |
+| `EMACSCLIENT_PATH` | _(searches PATH)_ | Custom path to `emacsclient` executable (optional) |
+
+## Ediff Approval Feature
+
+When `EMACS_EDIFF_APPROVAL=true` is set, task and journal create/update operations will present changes visually in Emacs using ediff before applying them. This provides a more interactive approval workflow compared to text-based previews.
+
+**Features:**
+- Visual side-by-side diff in Emacs
+- Edit the proposed changes before accepting
+- Present in a new Emacs frame (doesn't disrupt your existing windows)
+- Context-specific filenames for easy identification (e.g., `old-gh-127.org`, `new-20250107-1430.org`)
+
+**Setup:**
+
+1. **Place `emacs_ediff.el` in the project root** (already included)
+
+2. **Enable the feature** by setting the environment variable:
+   ```json
+   {
+     "mcpServers": {
+       "emacs-org": {
+         "env": {
+           "EMACS_EDIFF_APPROVAL": "true",
+           "EMACSCLIENT_PATH": "/path/to/emacsclient"  // optional
+         }
+       }
+     }
+   }
+   ```
+
+3. **Ensure Emacs is running** - The MCP server communicates with Emacs via `emacsclient`
+
+**Usage:**
+
+When Claude calls a create or update operation:
+
+1. A new Emacs frame opens with:
+   - Side-by-side diff: Buffer A (left, current) vs Buffer B (right, proposed)
+   - Control buffer below with ediff controls
+2. You can navigate diffs and edit Buffer B (the new content)
+3. From the control buffer, make your decision:
+   - `C-c C-y` - Approve changes (applies changes)
+   - `C-c C-k` - Reject changes (no modifications)
+   - `q` - Quit (approves by default)
+4. The frame and all buffers close automatically after your decision
+
+**Notes:**
+
+- Controls (`C-c C-y`, `C-c C-k`) only work in the control buffer
+- You can save edits to Buffer B with `C-x C-s` while working
+- If `emacsclient` is not found or Emacs is not running, operations fall back to auto-approve (no blocking)
+- The `emacs_ediff.el` file is auto-loaded on first use
+- Each operation uses temp files with descriptive names based on the task/journal context (e.g., `old-gh-127.org`, `new-20250110-1430.org`)
 
 ## Configuring CLAUDE.md
 
 To instruct Claude to use this MCP server for task and journal management, add the following to your `~/.claude/CLAUDE.md` file.
 
-> **⚠️ CRITICAL**: The most important instruction to include in your CLAUDE.md is the requirement to **always preview before creating or updating** entries. See the "Preview Before Update Workflow" and "Preview Before Create Workflow" sections below for the exact workflow requirements.
-
 ### MCP Tool Names
 
-When the MCP server is registered as `emacs-org`, Claude sees these tools:
+When the MCP server is registered as `emacs-org`, Claude sees these tools (12 total):
 
 | MCP Tool Name | Description |
 |---------------|-------------|
 | `mcp__emacs-org__list_tasks` | List tasks in a section |
-| `mcp__emacs-org__find_task` | Find a task by name/ticket ID |
+| `mcp__emacs-org__get_task` | Get a task by identifier |
 | `mcp__emacs-org__create_task` | Create a new task |
 | `mcp__emacs-org__update_task` | Update a task (auto-moves on DONE) |
-| `mcp__emacs-org__preview_task_update` | Preview task changes (shows diff, no modification) |
 | `mcp__emacs-org__move_task` | Move task between sections |
 | `mcp__emacs-org__search_tasks` | Search tasks by keyword |
-| `mcp__emacs-org__get_journal_entries` | Get entries for a date |
+| `mcp__emacs-org__list_journal_entries` | List entries for a date |
+| `mcp__emacs-org__get_journal_entry` | Get a journal entry |
 | `mcp__emacs-org__create_journal_entry` | Create a journal entry |
 | `mcp__emacs-org__update_journal_entry` | Update a journal entry |
-| `mcp__emacs-org__preview_journal_update` | Preview journal changes (shows diff, no modification) |
 | `mcp__emacs-org__search_journal` | Search journal entries |
 
 ### Example CLAUDE.md Section
@@ -183,18 +234,17 @@ Add this near the top of your `~/.claude/CLAUDE.md`:
 
 **Task Management** (for `~/org/tasks.org`):
 - `mcp__emacs-org__list_tasks` - List tasks in a section ("Tasks" or "Completed Tasks")
-- `mcp__emacs-org__find_task` - Find a task by name, ticket ID, or headline substring
+- `mcp__emacs-org__get_task` - Get a task by identifier
 - `mcp__emacs-org__create_task` - Create a new task in a section
 - `mcp__emacs-org__update_task` - Update an existing task (automatically moves to Completed if status=DONE)
-- `mcp__emacs-org__preview_task_update` - Preview changes to a task WITHOUT modifying the file (shows diff)
 - `mcp__emacs-org__move_task` - Move a task between sections
 - `mcp__emacs-org__search_tasks` - Search tasks by keyword across all sections
 
 **Journal Management** (for `~/org/journal/YYYYMMDD`):
-- `mcp__emacs-org__get_journal_entries` - Get journal entries for a specific date
+- `mcp__emacs-org__list_journal_entries` - List entries for a date
+- `mcp__emacs-org__get_journal_entry` - Get a journal entry
 - `mcp__emacs-org__create_journal_entry` - Create a new journal entry
 - `mcp__emacs-org__update_journal_entry` - Update an existing journal entry
-- `mcp__emacs-org__preview_journal_update` - Preview changes to a journal entry WITHOUT modifying the file (shows diff)
 - `mcp__emacs-org__search_journal` - Search journal entries by keyword (with days_back limit)
 
 ### When to Use MCP Tools
@@ -203,73 +253,12 @@ Add this near the top of your `~/.claude/CLAUDE.md`:
 - MCP tools handle org-mode formatting, file creation, and section management automatically
 - The tools ensure proper structure and avoid formatting errors
 
-### Preview Before Update Workflow
+### Ediff Approval
 
-**🔴 CRITICAL REQUIREMENT**: When updating tasks or journal entries, you **MUST ALWAYS** use the preview tool first to show the user what will change before making any modifications. **NEVER** call update functions without first showing a preview.
-
-**Required workflow for updates**:
-
-1. ✅ **FIRST**: Call `preview_task_update` or `preview_journal_update` with the proposed changes
-2. ✅ **SHOW**: The preview displays a diff of what will change (without modifying any files)
-3. ✅ **ASK**: Explicitly ask the user to confirm the changes look correct
-4. ✅ **WAIT**: Wait for explicit user approval ("yes", "ok", "proceed", etc.)
-5. ✅ **THEN**: Only after approval, call `update_task` or `update_journal_entry` with the same parameters
-
-**Example workflow**:
-```
-Claude: Let me show you what changes I'll make to the task...
-[calls preview_task_update]
-
-Output:
-Preview: Task in Tasks
-
-Proposed changes:
-− - [ ] Add OPA binary to Docker image
-+ - [X] Add OPA binary to Docker image
-
-Claude: Does this look correct?
-User: yes
-[calls update_task]
-```
-
-**Why this matters**: This ensures the user can verify changes before they are written to disk, preventing unwanted modifications to their org-mode files.
-
-### Preview Before Create Workflow
-
-**🔴 CRITICAL REQUIREMENT**: When creating new tasks or journal entries, you **MUST ALWAYS** show the user the complete proposed content before calling the create tool. **NEVER** create entries without first showing a preview.
-
-**Required workflow for creation**:
-
-1. ✅ **FIRST**: Format the complete proposed entry as an org-mode code block in your response
-2. ✅ **SHOW**: Display exactly what will be created, including all formatting, headings, and properties
-3. ✅ **ASK**: Explicitly ask the user to confirm the content looks correct
-4. ✅ **WAIT**: Wait for explicit user approval ("yes", "ok", "proceed", etc.)
-5. ✅ **THEN**: Only after approval, call `create_task` or `create_journal_entry`
-
-**Example workflow**:
-```
-Claude: Here's the journal entry I'll create:
-
-## Preview of Journal Entry to Create:
-
-```org
-** 14:30 GH-28 Completed API migration
-- Migrated all endpoints to new schema
-- Updated tests and documentation
-```
-
-**Parameters:**
-- **Time**: 14:30
-- **Headline**: "GH-28 Completed API migration"
-- **Tags**: none
-- **Content**: 2 bullet points
-
-Does this look correct?
-User: yes
-[calls create_journal_entry]
-```
-
-**Why this matters**: This gives the user a clear, readable preview before content is written to disk, ensuring the entry matches their expectations and follows proper org-mode formatting.
+When `EMACS_EDIFF_APPROVAL=true` is set:
+- Create and update operations automatically present changes in Emacs ediff
+- User can review and edit changes before approving
+- No special workflow instructions needed - approval is handled automatically
 
 ### Task Entry Format for MCP
 
