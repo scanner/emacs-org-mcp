@@ -508,11 +508,10 @@ def format_task_detail(task: "Task") -> str:
         Formatted task with all metadata and complete content
     """
     ticket = f"[{task.ticket_id}] " if task.ticket_id else ""
-    name_info = f"\n#+NAME: {task.custom_id}" if task.custom_id else ""
 
     lines = [
         f"{task.status}  {ticket}{task.headline}",
-        f"Section: {task.section}{name_info}",
+        f"Section: {task.section}",
         "",
         task.content,
     ]
@@ -1858,7 +1857,7 @@ async def list_tools():
                     },
                     "task_entry": {
                         "type": "string",
-                        "description": "Complete task in org format: '** TODO headline\\n#+NAME: task-id\\n*** Task items [/]\\n- [ ] item'",
+                        "description": "Complete task in org format: '** TODO headline\\n:PROPERTIES:\\n:CUSTOM_ID: task-id\\n:END:\\n\\n*** Task items [/]\\n- [ ] item'",
                     },
                 },
                 "required": ["section", "task_entry"],
