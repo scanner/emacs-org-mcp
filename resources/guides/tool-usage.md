@@ -100,13 +100,15 @@ Create a new journal entry
 - End of session (create `:daily_summary:` entry)
 - Significant milestone reached (with user confirmation)
 
+**IMPORTANT:** Always use the current system time for the timestamp. Do NOT use arbitrary times. Omit the `time` parameter to let it default to current time, or explicitly use `datetime.now().strftime("%H:%M")`.
+
 **Process:**
 1. Check existing entries with `list_journal_entries` to avoid duplicates
-2. Use current system time for timestamp
+2. Use current system time (not arbitrary times like "17:30")
 3. Include ticket ID (GH-xxx) if applicable
 4. Add PR link if relevant (use `gh pr view`)
 5. Add task links using `[[file:~/org/tasks.org::#CUSTOM_ID][Display]]` format
-6. Call `create_journal_entry`
+6. Call `create_journal_entry` with current time or omit time parameter
 
 ### update_journal_entry(date, line_number, time, headline, content, tags)
 Update an existing journal entry
@@ -152,27 +154,43 @@ When `EMACS_EDIFF_APPROVAL=true` is configured:
 ```
 
 ### Logging Work with Task Links
-```
-1. list_journal_entries(today) - Check existing entries
-2. create_journal_entry(
-     date=today,
-     time=current_time,
-     headline="Work on authentication",
-     content="- Progress on [[file:~/org/tasks.org::#task-gh-127][GH-127]]\n- Completed two subtasks",
-     tags=[]
-   )
+```python
+from datetime import date, datetime
+
+# 1. Check existing entries
+list_journal_entries(date.today())
+
+# 2. Create entry with current time
+create_journal_entry(
+    date=date.today(),
+    time=datetime.now().strftime("%H:%M"),  # Use actual current time
+    headline="Work on authentication",
+    content=(
+        "- Progress on [[file:~/org/tasks.org::#task-gh-127][GH-127]]\n"
+        "- Completed two subtasks"
+    ),
+    tags=[]
+)
 ```
 
 ### Logging Work at End of Day
-```
-1. list_journal_entries(today) - Check existing entries
-2. create_journal_entry(
-     date=today,
-     time=current_time,
-     headline="Summary of work",
-     content="- Completed [[file:~/org/tasks.org::#task-gh-127][GH-127]]\n- PRs: [[https://github.com/org/repo/pull/221][#221]]",
-     tags=["daily_summary"]
-   )
+```python
+from datetime import date, datetime
+
+# 1. Check existing entries
+list_journal_entries(date.today())
+
+# 2. Create summary with current time
+create_journal_entry(
+    date=date.today(),
+    time=datetime.now().strftime("%H:%M"),  # Use actual current time
+    headline="Summary of work",
+    content=(
+        "- Completed [[file:~/org/tasks.org::#task-gh-127][GH-127]]\n"
+        "- PRs: [[https://github.com/org/repo/pull/221][#221]]"
+    ),
+    tags=["daily_summary"]
+)
 ```
 
 ## Best Practices
@@ -187,3 +205,4 @@ When `EMACS_EDIFF_APPROVAL=true` is configured:
 8. **Keep journal entries focused** on outcomes and decisions
 9. **Batch related work** into single journal entries
 10. **Let timestamps auto-manage** - don't manually edit CREATED/MODIFIED/CLOSED
+11. **Use current time for journal entries** - always use actual system time, not arbitrary times
