@@ -118,10 +118,8 @@ When `EMACS_EDIFF_APPROVAL=true` is set, create/update operations present change
 The server provides comprehensive documentation via MCP resources, eliminating the need for extensive CLAUDE.md instructions:
 
 **Resource Structure:**
-- `emacs-org://guide/task-format` - Complete task format specification with examples
-- `emacs-org://guide/journal-format` - Complete journal format specification with examples
-- `emacs-org://guide/tool-usage` - When and how to use MCP tools vs direct file manipulation
-- `emacs-org://guide/examples` - Working code examples for common operations
+- `emacs-org://guide/task-format` - Task format specification
+- `emacs-org://guide/journal-format` - Journal format specification
 
 **Implementation:**
 - Guide content stored in `resources/guides/*.md` markdown files
