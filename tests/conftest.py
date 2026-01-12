@@ -2,6 +2,7 @@
 Pytest fixtures and factories for testing the MCP server.
 """
 
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import TypedDict
@@ -99,9 +100,9 @@ def make_tasks_org(
     Args:
         active_tasks: List of task strings for the active section
         completed_tasks: List of task strings for the completed section
-        active_section: Section name for active tasks (defaults to server.ACTIVE_SECTION)
-        completed_section: Section name for completed tasks (defaults to server.COMPLETED_SECTION)
-        high_level_section: Section name for high level tasks (defaults to server.HIGH_LEVEL_SECTION)
+        active_section: Section name for active tasks (defaults to "Tasks")
+        completed_section: Section name for completed tasks (defaults to "Completed Tasks")
+        high_level_section: Section name for high level tasks (defaults to "High Level Tasks (in order)")
         high_level_items: List of (completed, description) tuples for high level checklist
 
     Returns:
@@ -109,9 +110,9 @@ def make_tasks_org(
     """
     active_tasks = active_tasks or []
     completed_tasks = completed_tasks or []
-    active_section = active_section or server.ACTIVE_SECTION
-    completed_section = completed_section or server.COMPLETED_SECTION
-    high_level_section = high_level_section or server.HIGH_LEVEL_SECTION
+    active_section = active_section or "Tasks"
+    completed_section = completed_section or "Completed Tasks"
+    high_level_section = high_level_section or "High Level Tasks (in order)"
     high_level_items = high_level_items or []
 
     # Build high level checklist
@@ -189,20 +190,49 @@ def make_journal_file(entries: list[str], file_date: date) -> str:
 
 
 @pytest.fixture
-def temp_org_dir(tmp_path: Path, mocker: MockerFixture) -> Path:
+def config_factory(mocker: MockerFixture) -> Callable[[server.Config], None]:
     """
-    Create a temporary org directory structure and patch server module to use it.
+    Factory fixture that returns a callable to configure server with custom Config.
+
+    Usage:
+        def test_something(config_factory):
+            config_factory(server.Config(
+                org_dir=Path("/tmp/test"),
+                ediff_approval=True
+            ))
+            # Now server.global_state.config is set for this test
+
+    Returns:
+        Callable that accepts a Config object and patches global_state.config
+    """
+
+    def _configure(config: server.Config) -> None:
+        """Set the global_state.config for this test."""
+        mocker.patch.object(server.global_state, "config", config)
+
+    return _configure
+
+
+@pytest.fixture
+def temp_org_dir(
+    tmp_path: Path, config_factory: Callable[[server.Config], None]
+) -> Path:
+    """
+    Create a temporary org directory structure and configure server to use it.
 
     Yields the tmp_path for further customization in tests.
     """
     # Create directory structure
-    tasks_file = tmp_path / "tasks.org"
     journal_dir = tmp_path / "journal"
     journal_dir.mkdir()
 
-    # Patch the server module's paths
-    mocker.patch("server.TASKS_FILE", tasks_file)
-    mocker.patch("server.JOURNAL_DIR", journal_dir)
+    # Configure server to use this temp directory
+    config_factory(
+        server.Config(
+            org_dir=tmp_path,
+            journal_dir=journal_dir,
+        )
+    )
 
     return tmp_path
 

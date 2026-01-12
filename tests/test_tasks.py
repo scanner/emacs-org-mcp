@@ -18,24 +18,24 @@ class TestListTasks:
 
     def test_list_active_tasks(self, sample_tasks_file: TasksFileInfo) -> None:
         """Test listing tasks from active section."""
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
 
         assert len(tasks) == sample_tasks_file["active_count"]
-        assert all(t.section == server.ACTIVE_SECTION for t in tasks)
+        assert all(t.section == "Tasks" for t in tasks)
 
     def test_list_completed_tasks(
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test listing tasks from completed section."""
-        tasks = server.list_tasks(server.COMPLETED_SECTION)
+        tasks = server.list_tasks("Completed Tasks")
 
         assert len(tasks) == sample_tasks_file["completed_count"]
-        assert all(t.section == server.COMPLETED_SECTION for t in tasks)
+        assert all(t.section == "Completed Tasks" for t in tasks)
         assert all(t.status == "DONE" for t in tasks)
 
     def test_list_empty_section(self, empty_tasks_file: Path) -> None:
         """Test listing tasks from an empty section."""
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
 
         assert len(tasks) == 0
 
@@ -43,13 +43,13 @@ class TestListTasks:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test that listed tasks have all expected fields populated."""
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
 
         for task in tasks:
             assert task.custom_id != ""  # All our test tasks have names
             assert task.headline != ""
             assert task.status in ("TODO", "DONE")
-            assert task.section == server.ACTIVE_SECTION
+            assert task.section == "Tasks"
             assert task.content != ""
 
 
@@ -89,16 +89,14 @@ class TestFindTask:
         """Test finding a task in a specific section only."""
         # This task is in Active section
         #
-        result = server.find_task(
-            "task-jira-1234", section=server.ACTIVE_SECTION
-        )
+        result = server.find_task("task-jira-1234", section="Tasks")
         assert result is not None
 
         # Should not find it in Completed section
         #
         with pytest.raises(ValueError, match="Could not find task"):
             result = server.find_task(
-                "task-jira-1234", section=server.COMPLETED_SECTION
+                "task-jira-1234", section="Completed Tasks"
             )
 
     def test_find_nonexistent_task(
@@ -117,7 +115,7 @@ class TestFindTask:
         assert result is not None
         task, _, _, _ = result
         assert task.status == "DONE"
-        assert task.section == server.COMPLETED_SECTION
+        assert task.section == "Completed Tasks"
 
 
 class TestCreateTask:
@@ -133,14 +131,14 @@ class TestCreateTask:
             description="This is a new task",
         )
 
-        result = server.create_task(server.ACTIVE_SECTION, new_task)
+        result = server.create_task("Tasks", new_task)
 
         section, content = result
-        assert section == server.ACTIVE_SECTION
+        assert section == "Tasks"
         assert "New task headline" in content
 
         # Verify task was added
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
         assert len(tasks) == 1
         assert tasks[0].custom_id == "task-new"
 
@@ -154,9 +152,9 @@ class TestCreateTask:
             status="DONE",
         )
 
-        server.create_task(server.COMPLETED_SECTION, done_task)
+        server.create_task("Completed Tasks", done_task)
 
-        tasks = server.list_tasks(server.COMPLETED_SECTION)
+        tasks = server.list_tasks("Completed Tasks")
         assert len(tasks) == 1
         assert tasks[0].status == "DONE"
 
@@ -167,9 +165,9 @@ class TestCreateTask:
         original_count = sample_tasks_file["active_count"]
 
         new_task = make_task("Another task", "task-another")
-        server.create_task(server.ACTIVE_SECTION, new_task)
+        server.create_task("Tasks", new_task)
 
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
         assert len(tasks) == original_count + 1
 
     def test_create_invalid_section_raises(
@@ -202,7 +200,7 @@ class TestUpdateTask:
         assert old_task.custom_id == "task-jira-1234"
         assert "Updated headline" in new_content
         assert not was_moved
-        assert old_section == new_section == server.ACTIVE_SECTION
+        assert old_section == new_section == "Tasks"
 
         # Verify the update
         found = server.find_task("task-jira-1234")
@@ -215,8 +213,8 @@ class TestUpdateTask:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test that updating status to DONE moves task to Completed section."""
-        original_active = len(server.list_tasks(server.ACTIVE_SECTION))
-        original_completed = len(server.list_tasks(server.COMPLETED_SECTION))
+        original_active = len(server.list_tasks("Tasks"))
+        original_completed = len(server.list_tasks("Completed Tasks"))
 
         done_task = make_task(
             headline="JIRA-1234 Fix authentication bug",
@@ -228,20 +226,18 @@ class TestUpdateTask:
         _, _, was_moved, old_section, new_section = result
 
         assert was_moved
-        assert old_section == server.ACTIVE_SECTION
-        assert new_section == server.COMPLETED_SECTION
+        assert old_section == "Tasks"
+        assert new_section == "Completed Tasks"
 
         # Verify it moved sections
-        active = server.list_tasks(server.ACTIVE_SECTION)
-        completed = server.list_tasks(server.COMPLETED_SECTION)
+        active = server.list_tasks("Tasks")
+        completed = server.list_tasks("Completed Tasks")
 
         assert len(active) == original_active - 1
         assert len(completed) == original_completed + 1
 
         # Verify it's findable in completed
-        found = server.find_task(
-            "task-jira-1234", section=server.COMPLETED_SECTION
-        )
+        found = server.find_task("task-jira-1234", section="Completed Tasks")
         assert found is not None
 
     def test_update_nonexistent_task_raises(
@@ -263,26 +259,22 @@ class TestMoveTask:
         """Test moving a task from Active to Completed."""
         result = server.move_task(
             "task-jira-1234",
-            server.ACTIVE_SECTION,
-            server.COMPLETED_SECTION,
+            "Tasks",
+            "Completed Tasks",
         )
 
         headline, from_section, to_section = result
         assert "JIRA-1234" in headline
-        assert from_section == server.ACTIVE_SECTION
-        assert to_section == server.COMPLETED_SECTION
+        assert from_section == "Tasks"
+        assert to_section == "Completed Tasks"
 
         # Verify it's in the new section
-        found = server.find_task(
-            "task-jira-1234", section=server.COMPLETED_SECTION
-        )
+        found = server.find_task("task-jira-1234", section="Completed Tasks")
         assert found is not None
 
         # Verify it's not in the old section
         with pytest.raises(ValueError, match="Could not find"):
-            found = server.find_task(
-                "task-jira-1234", section=server.ACTIVE_SECTION
-            )
+            found = server.find_task("task-jira-1234", section="Tasks")
 
     def test_move_task_to_active(
         self, sample_tasks_file: TasksFileInfo
@@ -290,18 +282,16 @@ class TestMoveTask:
         """Test moving a task from Completed back to Active."""
         result = server.move_task(
             "task-jira-4321",
-            server.COMPLETED_SECTION,
-            server.ACTIVE_SECTION,
+            "Completed Tasks",
+            "Tasks",
         )
 
         headline, from_section, to_section = result
         assert "JIRA-4321" in headline
-        assert from_section == server.COMPLETED_SECTION
-        assert to_section == server.ACTIVE_SECTION
+        assert from_section == "Completed Tasks"
+        assert to_section == "Tasks"
 
-        found = server.find_task(
-            "task-jira-4321", section=server.ACTIVE_SECTION
-        )
+        found = server.find_task("task-jira-4321", section="Tasks")
         assert found is not None
 
     def test_move_task_without_properties_drawer(
@@ -319,30 +309,28 @@ class TestMoveTask:
 This task has no properties drawer at all.
 """
         # Add it to the Completed section
-        content = server.TASKS_FILE.read_text()
+        content = server.global_state.config.tasks_file.read_text()
         content = re.sub(
-            rf"(\* {server.COMPLETED_SECTION}\n)",
+            rf"(\* {"Completed Tasks"}\n)",
             rf"\1{task_without_props}\n",
             content,
         )
-        server.TASKS_FILE.write_text(content)
+        server.global_state.config.tasks_file.write_text(content)
 
         # Move the task to Active section - should not raise an error
         result = server.move_task(
             "Task without properties",  # Find by headline
-            server.COMPLETED_SECTION,
-            server.ACTIVE_SECTION,
+            "Completed Tasks",
+            "Tasks",
         )
 
         headline, from_section, to_section = result
         assert "Task without properties" in headline
-        assert from_section == server.COMPLETED_SECTION
-        assert to_section == server.ACTIVE_SECTION
+        assert from_section == "Completed Tasks"
+        assert to_section == "Tasks"
 
         # Verify it's in the Active section now
-        found = server.find_task(
-            "Task without properties", section=server.ACTIVE_SECTION
-        )
+        found = server.find_task("Task without properties", section="Tasks")
         assert found is not None
         task, _, _, _ = found
         # Task should still have no custom_id since it had no properties
@@ -367,30 +355,28 @@ This task has no properties drawer at all.
 This task is DONE but has no CLOSED timestamp.
 """
         # Add it to the Completed section
-        content = server.TASKS_FILE.read_text()
+        content = server.global_state.config.tasks_file.read_text()
         content = re.sub(
-            rf"(\* {server.COMPLETED_SECTION}\n)",
+            rf"(\* {"Completed Tasks"}\n)",
             rf"\1{task_no_closed}\n",
             content,
         )
-        server.TASKS_FILE.write_text(content)
+        server.global_state.config.tasks_file.write_text(content)
 
         # Move the task to Active section - should not raise an error
         result = server.move_task(
             "task-no-closed",
-            server.COMPLETED_SECTION,
-            server.ACTIVE_SECTION,
+            "Completed Tasks",
+            "Tasks",
         )
 
         headline, from_section, to_section = result
         assert "Task missing CLOSED property" in headline
-        assert from_section == server.COMPLETED_SECTION
-        assert to_section == server.ACTIVE_SECTION
+        assert from_section == "Completed Tasks"
+        assert to_section == "Tasks"
 
         # Verify it's in the Active section now
-        found = server.find_task(
-            "task-no-closed", section=server.ACTIVE_SECTION
-        )
+        found = server.find_task("task-no-closed", section="Tasks")
         assert found is not None
         task, _, _, _ = found
         assert task.custom_id == "task-no-closed"
@@ -404,8 +390,8 @@ This task is DONE but has no CLOSED timestamp.
         with pytest.raises(ValueError, match="Could not find"):
             server.move_task(
                 "task-nonexistent",
-                server.ACTIVE_SECTION,
-                server.COMPLETED_SECTION,
+                "Tasks",
+                "Completed Tasks",
             )
 
     def test_move_to_invalid_section_raises(
@@ -413,9 +399,7 @@ This task is DONE but has no CLOSED timestamp.
     ) -> None:
         """Test that moving to an invalid section raises ValueError."""
         with pytest.raises(ValueError, match="not found"):
-            server.move_task(
-                "task-jira-1234", server.ACTIVE_SECTION, "Invalid Section"
-            )
+            server.move_task("task-jira-1234", "Tasks", "Invalid Section")
 
 
 class TestSearchTasks:
@@ -455,8 +439,8 @@ class TestSearchTasks:
         # Should find both JIRA-1234 (active) and JIRA-4321 (completed)
         assert len(results) == 2
         sections = {t.section for t in results}
-        assert server.ACTIVE_SECTION in sections
-        assert server.COMPLETED_SECTION in sections
+        assert "Tasks" in sections
+        assert "Completed Tasks" in sections
 
     def test_search_no_results(self, sample_tasks_file: TasksFileInfo) -> None:
         """Test search with no matching results."""
@@ -531,10 +515,10 @@ class TestHighLevelTasksChecklist:
             custom_id="task-gh-123",
         )
 
-        server.create_task(server.ACTIVE_SECTION, new_task)
+        server.create_task("Tasks", new_task)
 
         # Read the file and verify checklist was updated
-        org = server.Org(str(server.TASKS_FILE))
+        org = server.Org(str(server.global_state.config.tasks_file))
         high_level_section = None
         for heading in org.get_all_headings():
             if heading.headline.level == 1:
@@ -543,7 +527,7 @@ class TestHighLevelTasksChecklist:
                     if hasattr(heading.headline, "title")
                     else str(heading.headline)
                 )
-                if server.HIGH_LEVEL_SECTION in title:
+                if "High Level Tasks (in order)" in title:
                     high_level_section = heading
                     break
 
@@ -568,7 +552,7 @@ class TestHighLevelTasksChecklist:
         server.update_task("task-jira-1234", done_task)
 
         # Read the file and verify checklist was updated
-        org = server.Org(str(server.TASKS_FILE))
+        org = server.Org(str(server.global_state.config.tasks_file))
         high_level_section = None
         for heading in org.get_all_headings():
             if heading.headline.level == 1:
@@ -577,7 +561,7 @@ class TestHighLevelTasksChecklist:
                     if hasattr(heading.headline, "title")
                     else str(heading.headline)
                 )
-                if server.HIGH_LEVEL_SECTION in title:
+                if "High Level Tasks (in order)" in title:
                     high_level_section = heading
                     break
 
@@ -597,10 +581,10 @@ class TestHighLevelTasksChecklist:
             custom_id="task-jira-456",
         )
 
-        server.create_task(server.ACTIVE_SECTION, new_task)
+        server.create_task("Tasks", new_task)
 
         # Read the file and verify checklist strips ticket ID
-        org = server.Org(str(server.TASKS_FILE))
+        org = server.Org(str(server.global_state.config.tasks_file))
         high_level_section = None
         for heading in org.get_all_headings():
             if heading.headline.level == 1:
@@ -609,7 +593,7 @@ class TestHighLevelTasksChecklist:
                     if hasattr(heading.headline, "title")
                     else str(heading.headline)
                 )
-                if server.HIGH_LEVEL_SECTION in title:
+                if "High Level Tasks (in order)" in title:
                     high_level_section = heading
                     break
 
@@ -632,10 +616,10 @@ class TestUUIDGeneration:
             custom_id="task-no-uuid",
         )
 
-        server.create_task(server.ACTIVE_SECTION, new_task)
+        server.create_task("Tasks", new_task)
 
         # Verify the task has a UUID
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
         assert len(tasks) == 1
         assert tasks[0].id != ""
         assert len(tasks[0].id) == 36  # Standard UUID format
@@ -660,10 +644,10 @@ class TestUUIDGeneration:
 Task description here.
 """
 
-        server.create_task(server.ACTIVE_SECTION, task_with_uuid)
+        server.create_task("Tasks", task_with_uuid)
 
         # Verify the UUID was preserved
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
         assert len(tasks) == 1
         assert tasks[0].id == existing_uuid
 
@@ -679,9 +663,9 @@ Task description here.
             custom_id="task-another",
         )
 
-        server.create_task(server.ACTIVE_SECTION, new_task)
+        server.create_task("Tasks", new_task)
 
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
         assert len(tasks) == 1
 
         # Verify it's a valid UUID by parsing it
@@ -714,16 +698,16 @@ class TestTaskIDExtraction:
 This task has an explicit ID.
 """
         # Add it to the file
-        content = server.TASKS_FILE.read_text()
+        content = server.global_state.config.tasks_file.read_text()
 
         content = re.sub(
-            rf"(\* {server.ACTIVE_SECTION}\n)",
+            rf"(\* {"Tasks"}\n)",
             rf"\1{task_with_id}\n",
             content,
         )
-        server.TASKS_FILE.write_text(content)
+        server.global_state.config.tasks_file.write_text(content)
 
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
 
         # Find the task we added
         task_with_explicit_id = next(
@@ -753,14 +737,14 @@ This task has an explicit ID.
 Finding this task.
 """
         # Add it to the file
-        content = server.TASKS_FILE.read_text()
+        content = server.global_state.config.tasks_file.read_text()
 
         content = re.sub(
-            rf"(\* {server.ACTIVE_SECTION}\n)",
+            rf"(\* {"Tasks"}\n)",
             rf"\1{task_with_id}\n",
             content,
         )
-        server.TASKS_FILE.write_text(content)
+        server.global_state.config.tasks_file.write_text(content)
 
         result = server.find_task("task-find-by-id")
 
@@ -785,10 +769,10 @@ class TestTaskTimestamps:
             custom_id="task-new",
         )
 
-        server.create_task(server.ACTIVE_SECTION, new_task)
+        server.create_task("Tasks", new_task)
 
         # Verify the task has :CREATED: timestamp
-        tasks = server.list_tasks(server.ACTIVE_SECTION)
+        tasks = server.list_tasks("Tasks")
         assert len(tasks) == 1
         assert tasks[0].created != ""
         # Active timestamp format: <YYYY-MM-DD DDD HH:MM>
@@ -947,13 +931,13 @@ class TestTaskTimestamps:
 This task is DONE but has no CLOSED timestamp.
 """
         # Add it to the Active section
-        content = server.TASKS_FILE.read_text()
+        content = server.global_state.config.tasks_file.read_text()
         content = re.sub(
-            rf"(\* {server.ACTIVE_SECTION}\n)",
+            rf"(\* {"Tasks"}\n)",
             rf"\1{task_done_no_closed}\n",
             content,
         )
-        server.TASKS_FILE.write_text(content)
+        server.global_state.config.tasks_file.write_text(content)
 
         # Verify the task exists and has no :CLOSED:
         result = server.find_task("task-done-no-closed")

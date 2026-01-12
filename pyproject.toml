@@ -5,6 +5,7 @@ description = "MCP server for managing Emacs org-mode tasks and journal entries"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "docopt>=0.6.2",
     "mcp>=1.25.0",
     "orgmunge>=0.3.1",
     "rich>=14.2.0",

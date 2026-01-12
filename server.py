@@ -1,62 +1,99 @@
 #!/usr/bin/env python3
-"""
-MCP Server for Emacs Org-Mode Tasks and Journal Management
+"""MCP Server for Emacs Org-Mode Tasks and Journal Management
+
+Usage:
+  server.py [--ediff-approval] [--org-dir=<path>] [--journal-dir=<path>]
+            [--active-section=<name>] [--completed-section=<name>]
+            [--high-level-section=<name>] [--emacsclient-path=<path>]
+  server.py (-h | --help)
+  server.py --version
+
+Options:
+  --ediff-approval              Enable ediff approval
+  --org-dir=<path>              Base org directory [default: ~/org]
+  --journal-dir=<path>          Journal directory (defaults to <org-dir>/journal)
+  --active-section=<name>       Active tasks section [default: Tasks]
+  --completed-section=<name>    Completed tasks section [default: Completed Tasks]
+  --high-level-section=<name>   High level tasks section [default: High Level Tasks (in order)]
+  --emacsclient-path=<path>     Path to emacsclient
+  -h --help                     Show this help
+  --version                     Show version
+
+Configuration Priority:
+  1. Command-line arguments (highest)
+  2. Environment variables (EMACS_EDIFF_APPROVAL, ORG_DIR, etc.)
+  3. Defaults (lowest)
 
 Uses orgmunge for robust org-mode file manipulation.
 Designed for use with Claude CLI/Code/Desktop to manage:
 - ~/org/tasks.org (task tracking with Active/Completed sections)
 - ~/org/journal/YYYYMMDD (daily journal entries)
-
-Task and journal content format follows the conventions in ~/.claude/CLAUDE.md
 """
 
+import asyncio
+import builtins
 import difflib
 import json
 import logging
 import os
+import pathlib
 import re
 import shutil
 import subprocess
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
+from docopt import docopt
 from mcp.server import InitializationOptions, Server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.stdio import stdio_server
-from mcp.types import Resource, ServerCapabilities, TextContent, Tool
+from mcp.types import (
+    Resource,
+    ServerCapabilities,
+    TextContent,
+    Tool,
+)
 from orgmunge import Org
 from orgmunge.classes import Heading
+from pydantic import AnyUrl
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
-ORG_DIR = Path(os.environ.get("ORG_DIR", Path.home() / "org"))
-TASKS_FILE = ORG_DIR / "tasks.org"
-EMACSCLIENT_PATH = Path(
-    os.environ.get("EMACSCLIENT_PATH", "/usr/local/bin/emacsclient")
-)
-JOURNAL_DIR = Path(os.environ.get("JOURNAL_DIR", ORG_DIR / "journal"))
+# These are the properties we care about on a task in tasks.org
+PROPERTIES = ("CUSTOM_ID", "ID", "CREATED", "MODIFIED", "CLOSED")
+
+# TODO/DONE states from orgmunge
 TODO_STATES = (v for k, v in Org.get_todos()["todo_states"].items())
 DONE_STATES = (v for k, v in Org.get_todos()["done_states"].items())
 ALL_STATES = tuple(list(TODO_STATES) + list(DONE_STATES))
 
-# These are the properties we care about on a task in tasks.org
-#
-PROPERTIES = ("CUSTOM_ID", "ID", "CREATED", "MODIFIED", "CLOSED")
-
-# Section names - configurable via environment variables
-ACTIVE_SECTION = os.environ.get("ACTIVE_SECTION", "Tasks")
-COMPLETED_SECTION = os.environ.get("COMPLETED_SECTION", "Completed Tasks")
-HIGH_LEVEL_SECTION = os.environ.get(
-    "HIGH_LEVEL_SECTION", "High Level Tasks (in order)"
-)
-
 server = Server("emacs-org-mode")
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Config:
+    """Configuration for the MCP server."""
+
+    org_dir: Path = Path.home() / "org"
+    journal_dir: Path = Path.home() / "org" / "journal"
+    emacsclient_path: Path = Path("/usr/local/bin/emacsclient")
+    ediff_approval: bool = False
+    active_section: str = "Tasks"
+    completed_section: str = "Completed Tasks"
+    high_level_section: str = "High Level Tasks (in order)"
+
+    @property
+    def tasks_file(self) -> Path:
+        """Return the path to the tasks.org file."""
+        return self.org_dir / "tasks.org"
 
 
 @dataclass
@@ -66,9 +103,104 @@ class GlobalState:
     requiring the use of a `global` statement.
     """
 
+    config: Config = field(default_factory=Config)
     elisp_loaded: bool = False
 
 
+# Configuration field types for type conversion
+CONFIG_FIELD_TYPES = {fld.name: fld.type for fld in fields(Config)}
+
+# Mapping of environment variables to Config fields
+ENV_VAR_TO_CONFIG = {
+    "ORG_DIR": "org_dir",
+    "JOURNAL_DIR": "journal_dir",
+    "EMACSCLIENT_PATH": "emacsclient_path",
+    "EMACS_EDIFF_APPROVAL": "ediff_approval",
+    "ACTIVE_SECTION": "active_section",
+    "COMPLETED_SECTION": "completed_section",
+    "HIGH_LEVEL_SECTION": "high_level_section",
+}
+
+# Mapping of CLI arguments to Config fields
+CLI_ARG_TO_CONFIG = {
+    "--org-dir": "org_dir",
+    "--journal-dir": "journal_dir",
+    "--emacsclient-path": "emacsclient_path",
+    "--ediff-approval": "ediff_approval",
+    "--active-section": "active_section",
+    "--completed-section": "completed_section",
+    "--high-level-section": "high_level_section",
+}
+
+
+###############################################################################
+#
+def load_config(args: dict[str, str | bool | None]) -> Config:
+    """
+    Load configuration from CLI arguments and environment variables.
+
+    Configuration priority (highest to lowest):
+    1. Command-line arguments
+    2. Environment variables
+    3. Defaults from Config dataclass
+
+    Args:
+        args: Parsed command-line arguments from docopt
+
+    Returns:
+        Configured Config instance
+    """
+    config_map: dict[str, Any] = {}
+
+    # Load from environment variables
+    #
+    for env_var, config_field in ENV_VAR_TO_CONFIG.items():
+        if env_var in os.environ:
+            field_type = CONFIG_FIELD_TYPES[config_field]
+            value = os.environ[env_var]
+
+            # Convert the value from a string to the expected type for each
+            # parameter specified.
+            #
+            match field_type:
+                case builtins.bool:
+                    config_map[config_field] = value.lower() in (
+                        "true",
+                        "1",
+                        "yes",
+                    )
+                case pathlib.Path:
+                    config_map[config_field] = Path(value).expanduser()
+                case _:
+                    config_map[config_field] = value
+
+    # Load from CLI arguments (overrides environment variables)
+    for cli_arg, config_field in CLI_ARG_TO_CONFIG.items():
+        cli_value = args.get(cli_arg)
+        if cli_value is not None:
+            field_type = CONFIG_FIELD_TYPES[config_field]
+
+            # Type conversion
+            match field_type:
+                case builtins.bool:
+                    # Boolean flags are directly True/False from docopt
+                    config_map[config_field] = bool(cli_value)
+                case pathlib.Path:
+                    config_map[config_field] = Path(str(cli_value)).expanduser()
+                case _:
+                    config_map[config_field] = cli_value
+
+    # Create Config instance with overrides
+    config = Config(**config_map)
+
+    # If org_dir was customized but journal_dir wasn't, default journal_dir to org_dir/journal
+    if "org_dir" in config_map and "journal_dir" not in config_map:
+        config.journal_dir = config.org_dir / "journal"
+
+    return config
+
+
+# Global state - config will be updated in __main__ after parsing args
 global_state = GlobalState()
 
 
@@ -182,15 +314,15 @@ def format_simple_diff(old_content: str, new_content: str) -> str:
 #
 def get_emacsclient_path() -> str | None:
     """
-    Get path to emacsclient, checking env var first.
+    Get path to emacsclient, checking config first.
 
     Returns:
         Path to emacsclient executable, or None if not found
     """
     # Check configured path
-    configured_path = os.getenv("EMACSCLIENT_PATH")
-    if configured_path and Path(configured_path).exists():
-        return configured_path
+    configured_path = global_state.config.emacsclient_path
+    if configured_path.exists():
+        return str(configured_path)
 
     # Fall back to PATH search
     return shutil.which("emacsclient")
@@ -203,20 +335,21 @@ def is_ediff_approval_enabled() -> bool:
     Check if ediff approval is enabled and available.
 
     Returns:
-        True if EMACS_EDIFF_APPROVAL is enabled and emacsclient is available
+        True if ediff_approval config is enabled and emacsclient is available
     """
-    if os.getenv("EMACS_EDIFF_APPROVAL", "").lower() not in (
-        "true",
-        "1",
-        "yes",
-    ):
+    ediff_enabled = global_state.config.ediff_approval
+    logger.info("Checking ediff approval: ediff_approval=%r", ediff_enabled)
+
+    if not ediff_enabled:
+        logger.info("Ediff approval disabled in config")
         return False
 
     emacsclient = get_emacsclient_path()
     if emacsclient is None:
-        logger.warning("EMACS_EDIFF_APPROVAL enabled but emacsclient not found")
+        logger.warning("Ediff approval enabled but emacsclient not found")
         return False
 
+    logger.info("Ediff approval enabled, emacsclient found at %s", emacsclient)
     return True
 
 
@@ -274,13 +407,18 @@ def request_ediff_approval(
     Returns:
         (approved, final_content) where final_content may be user-edited
     """
+    logger.info("request_ediff_approval called for context: %s", context_name)
+
     if not is_ediff_approval_enabled():
+        logger.info("Ediff approval not enabled, auto-approving")
         return (True, new_content)
 
     emacsclient = get_emacsclient_path()
     if not emacsclient:
+        logger.warning("emacsclient not found, auto-approving")
         return (True, new_content)
 
+    logger.info("Starting ediff approval workflow for %s", context_name)
     ensure_elisp_loaded()
 
     # Create temp directory with context-specific files
@@ -670,9 +808,10 @@ def get_org() -> Org:
     Raises:
         FileNotFoundError: If tasks file does not exist
     """
-    if not TASKS_FILE.exists():
-        raise FileNotFoundError(f"Tasks file not found: {TASKS_FILE}")
-    return Org(str(TASKS_FILE))
+    tasks_file = global_state.config.tasks_file
+    if not tasks_file.exists():
+        raise FileNotFoundError(f"Tasks file not found: {tasks_file}")
+    return Org(str(tasks_file))
 
 
 ###############################################################################
@@ -846,7 +985,14 @@ def find_task(
         ticket ID in headline, or substring in headline.
     """
     org = get_org()
-    sections = [section] if section else [ACTIVE_SECTION, COMPLETED_SECTION]
+    sections = (
+        [section]
+        if section
+        else [
+            global_state.config.active_section,
+            global_state.config.completed_section,
+        ]
+    )
 
     for sec_name in sections:
         section_heading = find_section(org, sec_name)
@@ -1003,7 +1149,9 @@ def add_high_level_task(org: Org, description: str) -> None:
     Note:
         Does nothing if High Level Tasks section does not exist.
     """
-    high_level_section = find_section(org, HIGH_LEVEL_SECTION)
+    high_level_section = find_section(
+        org, global_state.config.high_level_section
+    )
     if high_level_section is None:
         # If High Level Tasks section doesn't exist, skip
         return
@@ -1037,7 +1185,9 @@ def update_high_level_task(org: Org, description: str, completed: bool) -> None:
     Note:
         Does nothing if High Level Tasks section does not exist.
     """
-    high_level_section = find_section(org, HIGH_LEVEL_SECTION)
+    high_level_section = find_section(
+        org, global_state.config.high_level_section
+    )
     if high_level_section is None:
         return
 
@@ -1132,7 +1282,7 @@ def create_task(section_name: str, task_entry: str) -> tuple[str, str]:
     target_section.add_child(new_task, new=True)
 
     # Add to High Level Tasks checklist if creating in active section
-    if section_name == ACTIVE_SECTION:
+    if section_name == global_state.config.active_section:
         headline_title = (
             new_task.headline.title
             if hasattr(new_task.headline, "title")
@@ -1141,7 +1291,7 @@ def create_task(section_name: str, task_entry: str) -> tuple[str, str]:
         description = extract_task_description(headline_title)
         add_high_level_task(org, description)
 
-    org.write(str(TASKS_FILE))
+    org.write(str(global_state.config.tasks_file))
 
     # Return section and the task content for formatting
     return (section_name, heading_to_org_string(new_task))
@@ -1249,11 +1399,13 @@ def update_task(
 
     # Determine target section based on new status
     if new_status == "DONE":
-        target_section = find_section(org, COMPLETED_SECTION)
-        target_section_name = COMPLETED_SECTION
+        target_section = find_section(
+            org, global_state.config.completed_section
+        )
+        target_section_name = global_state.config.completed_section
     else:
-        target_section = find_section(org, ACTIVE_SECTION)
-        target_section_name = ACTIVE_SECTION
+        target_section = find_section(org, global_state.config.active_section)
+        target_section_name = global_state.config.active_section
 
     if target_section is None:
         raise ValueError(f"Target section not found for status: {new_status}")
@@ -1296,7 +1448,7 @@ def update_task(
             # Mark as incomplete in checklist
             update_high_level_task(org, description, completed=False)
 
-    org.write(str(TASKS_FILE))
+    org.write(str(global_state.config.tasks_file))
 
     new_content = heading_to_org_string(new_task)
 
@@ -1331,7 +1483,7 @@ def move_task(
 
     old_section.remove_child(heading)
     target_section.add_child(heading, new=True)
-    org.write(str(TASKS_FILE))
+    org.write(str(global_state.config.tasks_file))
 
     return (task.headline, from_section, to_section)
 
@@ -1349,8 +1501,8 @@ def search_tasks(query: str) -> list[Task]:
         List of tasks matching the query in headline or content
     """
     all_tasks = []
-    all_tasks.extend(list_tasks(ACTIVE_SECTION))
-    all_tasks.extend(list_tasks(COMPLETED_SECTION))
+    all_tasks.extend(list_tasks(global_state.config.active_section))
+    all_tasks.extend(list_tasks(global_state.config.completed_section))
 
     query_lower = query.lower()
     return [
@@ -1378,10 +1530,11 @@ def detect_journal_extension() -> str:
         Ensures new journal files match the existing naming convention in the
         journal directory. Checks for YYYYMMDD.org pattern.
     """
-    if not JOURNAL_DIR.exists():
+    journal_dir = global_state.config.journal_dir
+    if not journal_dir.exists():
         return ""
     # Check if any YYYYMMDD.org files exist
-    for path in JOURNAL_DIR.iterdir():
+    for path in journal_dir.iterdir():
         if (
             path.suffix == ".org"
             and path.stem.isdigit()
@@ -1407,7 +1560,7 @@ def get_journal_path(target_date: date) -> Path:
         Checks for existing file with .org extension first, then without.
         Uses detected extension convention for new files.
     """
-    base_path = JOURNAL_DIR / target_date.strftime("%Y%m%d")
+    base_path = global_state.config.journal_dir / target_date.strftime("%Y%m%d")
 
     # Check for existing file with .org extension first, then without
     org_path = base_path.with_suffix(".org")
@@ -1456,6 +1609,7 @@ def backup_file(path: Path) -> Path:
     Note:
         Does nothing if file doesn't exist (returns original path).
         Backup format: original.YYYYMMDD_HHMMSS.bak
+        Caller should remove backup after successful write operation.
     """
     if not path.exists():
         return path
@@ -1624,8 +1778,12 @@ def create_journal_entry(
         date_heading = target_date.strftime("* %Y-%m-%d")
         new_content = f"{date_heading}\n\n{final_entry_text}"
 
-    backup_file(file_path)
+    backup_path = backup_file(file_path)
     write_file(file_path, new_content)
+
+    # Remove backup after successful write
+    if backup_path != file_path and backup_path.exists():
+        backup_path.unlink()
 
     return (target_date, entry)
 
@@ -1704,8 +1862,12 @@ def update_journal_entry(
     new_entry_lines = final_entry_text.split("\n")
     new_lines = lines[:entry_start] + new_entry_lines + lines[entry_end:]
 
-    backup_file(file_path)
+    backup_path = backup_file(file_path)
     write_file(file_path, "\n".join(new_lines))
+
+    # Remove backup after successful write
+    if backup_path != file_path and backup_path.exists():
+        backup_path.unlink()
 
     # Parse date from filename (YYYYMMDD or YYYYMMDD.org)
     date_str = file_path.stem if file_path.suffix == ".org" else file_path.name
@@ -1812,14 +1974,21 @@ async def list_tools():
         # ----- Task Tools -----
         Tool(
             name="list_tasks",
-            description="List all tasks in a section of tasks.org. Returns task names, headlines, status, and full content.",
+            description=(
+                "List all tasks in a section of tasks.org. Returns task names, headlines, status, and full content. "
+                "Use this to check for existing tasks before creating new ones, or to get an overview of work in progress. "
+                "For detailed format specifications, read the emacs-org://guide/task-format resource."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "section": {
                         "type": "string",
                         "description": "Section name",
-                        "enum": [ACTIVE_SECTION, COMPLETED_SECTION],
+                        "enum": [
+                            global_state.config.active_section,
+                            global_state.config.completed_section,
+                        ],
                     }
                 },
                 "required": ["section"],
@@ -1827,7 +1996,11 @@ async def list_tools():
         ),
         Tool(
             name="get_task",
-            description="Get a specific task by identifier (#+NAME like 'task-gh-28', ticket ID like 'GH-28', or headline substring). Returns full task content.",
+            description=(
+                "Get a specific task by identifier (#+NAME like 'task-gh-28', ticket ID like 'GH-28', or headline substring). "
+                "Returns full task content including all properties, subsections, and task items. "
+                "For format specifications and examples, read emacs-org://guide/task-format and emacs-org://guide/examples."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1838,7 +2011,10 @@ async def list_tools():
                     "section": {
                         "type": "string",
                         "description": "Section to search (optional, searches all if omitted)",
-                        "enum": [ACTIVE_SECTION, COMPLETED_SECTION],
+                        "enum": [
+                            global_state.config.active_section,
+                            global_state.config.completed_section,
+                        ],
                     },
                 },
                 "required": ["identifier"],
@@ -1846,18 +2022,31 @@ async def list_tools():
         ),
         Tool(
             name="create_task",
-            description="Create a new task in a section. Provide the complete org-formatted task entry.",
+            description=(
+                "Create a new task in a section. Provide the complete org-formatted task entry with PROPERTIES drawer and subsections. "
+                "The :ID: property is auto-generated if not provided. Always search for duplicates before creating. "
+                "CREATED and MODIFIED timestamps are managed automatically. "
+                "For complete format specifications, examples, and best practices, read emacs-org://guide/task-format and emacs-org://guide/examples. "
+                "For usage guidelines, read emacs-org://guide/tool-usage."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "section": {
                         "type": "string",
                         "description": "Section to add the task to",
-                        "enum": [ACTIVE_SECTION, COMPLETED_SECTION],
+                        "enum": [
+                            global_state.config.active_section,
+                            global_state.config.completed_section,
+                        ],
                     },
                     "task_entry": {
                         "type": "string",
-                        "description": "Complete task in org format: '** TODO headline\\n:PROPERTIES:\\n:CUSTOM_ID: task-id\\n:END:\\n\\n*** Task items [/]\\n- [ ] item'",
+                        "description": (
+                            "Complete task in org format with heading, PROPERTIES drawer (:CUSTOM_ID: required, :ID: optional), "
+                            "and subsections (*** Description, *** Task items [/], etc.). "
+                            "Example: '** TODO GH-123 Task\\n:PROPERTIES:\\n:CUSTOM_ID: task-gh-123\\n:END:\\n\\n*** Task items [/]\\n- [ ] item'"
+                        ),
                     },
                 },
                 "required": ["section", "task_entry"],
@@ -1865,17 +2054,25 @@ async def list_tools():
         ),
         Tool(
             name="update_task",
-            description="Update an existing task. Provide complete new task entry. Task will be moved to appropriate section if status changes (TODO->DONE moves to Completed).",
+            description=(
+                "Update an existing task with new content. Provide the complete new task entry including all properties and subsections. "
+                "Automatic behaviors: (1) TODO→DONE moves to Completed section and sets CLOSED timestamp, "
+                "(2) DONE→TODO moves to Tasks section and clears CLOSED timestamp, "
+                "(3) MODIFIED timestamp updated automatically. "
+                "Preserve all PROPERTIES including :ID:, :CUSTOM_ID:, and :CREATED:. "
+                "For format specifications and examples, read emacs-org://guide/task-format and emacs-org://guide/examples. "
+                "For usage guidelines, read emacs-org://guide/tool-usage."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "identifier": {
                         "type": "string",
-                        "description": "Task identifier to find the task",
+                        "description": "Task identifier to find the task (ticket ID, CUSTOM_ID, or headline)",
                     },
                     "task_entry": {
                         "type": "string",
-                        "description": "Complete new task in org format",
+                        "description": "Complete new task entry in org format with all properties and subsections preserved",
                     },
                 },
                 "required": ["identifier", "task_entry"],
@@ -1893,11 +2090,17 @@ async def list_tools():
                     },
                     "from_section": {
                         "type": "string",
-                        "enum": [ACTIVE_SECTION, COMPLETED_SECTION],
+                        "enum": [
+                            global_state.config.active_section,
+                            global_state.config.completed_section,
+                        ],
                     },
                     "to_section": {
                         "type": "string",
-                        "enum": [ACTIVE_SECTION, COMPLETED_SECTION],
+                        "enum": [
+                            global_state.config.active_section,
+                            global_state.config.completed_section,
+                        ],
                     },
                 },
                 "required": ["identifier", "from_section", "to_section"],
@@ -1905,7 +2108,11 @@ async def list_tools():
         ),
         Tool(
             name="search_tasks",
-            description="Search tasks by query string across all sections. Returns complete matching tasks.",
+            description=(
+                "Search tasks by query string across all sections. Returns complete matching tasks. "
+                "Use this to check for existing tasks before creating new ones, or to find tasks related to a topic. "
+                "For usage guidelines, read emacs-org://guide/tool-usage."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1920,7 +2127,11 @@ async def list_tools():
         # ----- Journal Tools -----
         Tool(
             name="list_journal_entries",
-            description="List all journal entries for a specific date.",
+            description=(
+                "List all journal entries for a specific date. Returns entry times, headlines, content, and tags. "
+                "Use this to check what's already logged before creating new entries to avoid duplicates. "
+                "For format specifications and examples, read emacs-org://guide/journal-format and emacs-org://guide/examples."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1933,7 +2144,10 @@ async def list_tools():
         ),
         Tool(
             name="get_journal_entry",
-            description="Get a specific journal entry by date and time or headline.",
+            description=(
+                "Get a specific journal entry by date and time or headline substring. Returns complete entry content. "
+                "For format specifications and examples, read emacs-org://guide/journal-format and emacs-org://guide/examples."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1951,7 +2165,14 @@ async def list_tools():
         ),
         Tool(
             name="create_journal_entry",
-            description="Create a new journal entry. Format: ** HH:MM headline :tags:",
+            description=(
+                "Create a new journal entry with format: ** HH:MM [TICKET-ID] headline :tags:. "
+                "Always check for existing entries first using list_journal_entries to avoid duplicates. "
+                "Include ticket IDs (GH-123), PR links ([[url][#123]]), and task links ([[file:~/org/tasks.org::#task-id][Display]]) as appropriate. "
+                "Use current system time for timestamp. Common tags: daily_summary, meeting, decision, blocked. "
+                "For complete format specifications, linking guidelines, and examples, read emacs-org://guide/journal-format and emacs-org://guide/examples. "
+                "For usage guidelines and workflows, read emacs-org://guide/tool-usage."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1961,20 +2182,27 @@ async def list_tools():
                     },
                     "time": {
                         "type": "string",
-                        "description": "Time in HH:MM format. Defaults to current time.",
+                        "description": "Time in HH:MM format (24-hour). Defaults to current time.",
                     },
                     "headline": {
                         "type": "string",
-                        "description": "Entry headline (e.g., 'GH-28 [[url][#28]] Completed migration')",
+                        "description": (
+                            "Entry headline with optional ticket ID and PR/task links. "
+                            "Examples: 'GH-28 Completed feature', 'GH-127 [[https://github.com/org/repo/pull/221][#221]] Submitted PR', "
+                            "'Work summary'"
+                        ),
                     },
                     "content": {
                         "type": "string",
-                        "description": "Entry body (bullet points with details)",
+                        "description": (
+                            "Entry body with bullet points (- ). Include task links using [[file:~/org/tasks.org::#task-id][Display]] format. "
+                            "Focus on outcomes, decisions, and follow-ups."
+                        ),
                     },
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Tags like 'daily_summary'",
+                        "description": "Tags like 'daily_summary', 'meeting', 'decision', 'blocked'",
                     },
                 },
                 "required": ["headline", "content"],
@@ -1982,7 +2210,11 @@ async def list_tools():
         ),
         Tool(
             name="update_journal_entry",
-            description="Update an existing journal entry.",
+            description=(
+                "Update an existing journal entry with new content. Requires line_number from list_journal_entries. "
+                "Use this to correct or enhance existing entries, or add forgotten details like task links. "
+                "For format specifications and examples, read emacs-org://guide/journal-format and emacs-org://guide/examples."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1996,15 +2228,15 @@ async def list_tools():
                     },
                     "time": {
                         "type": "string",
-                        "description": "Time in HH:MM format",
+                        "description": "Time in HH:MM format (24-hour)",
                     },
                     "headline": {
                         "type": "string",
-                        "description": "New headline",
+                        "description": "New headline with optional ticket ID, PR links, and task links",
                     },
                     "content": {
                         "type": "string",
-                        "description": "New body content",
+                        "description": "New body content with bullet points and optional task links",
                     },
                     "tags": {
                         "type": "array",
@@ -2023,17 +2255,33 @@ async def list_tools():
         ),
         Tool(
             name="search_journal",
-            description="Search journal entries by query. Returns complete matching entries.",
+            description=(
+                "Search journal entries by query string across recent days. Returns complete matching entries. "
+                "Use this to find past work on a topic, review recent activity, or look up when something was done. "
+                "Searches last 30 days by default. "
+                "For usage guidelines, read emacs-org://guide/tool-usage."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query"},
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (matches headlines and content)",
+                    },
                     "days_back": {
                         "type": "integer",
-                        "description": "Days to search back (default 30)",
+                        "description": "Days to search back (default 30, searches from today backwards)",
                     },
                 },
                 "required": ["query"],
+            },
+        ),
+        Tool(
+            name="diagnostic_env",
+            description="Diagnostic tool to check environment variables for ediff approval",
+            inputSchema={
+                "type": "object",
+                "properties": {},
             },
         ),
     ]
@@ -2168,6 +2416,33 @@ async def call_tool(name: str, arguments: dict):
                 output = format_search_results(entries, "journal entry")
                 return [TextContent(type="text", text=output)]
 
+            case "diagnostic_env":
+                # Diagnostic tool to check configuration
+                ediff_val_env = os.getenv("EMACS_EDIFF_APPROVAL", "NOT SET")
+                emacsclient_val_env = os.getenv("EMACSCLIENT_PATH", "NOT SET")
+                emacsclient_found = get_emacsclient_path()
+                ediff_enabled = is_ediff_approval_enabled()
+
+                diagnostic = f"""Configuration Diagnostic for Ediff Approval
+================================================
+
+Config values (from CLI args / env vars / defaults):
+  ediff_approval = {global_state.config.ediff_approval!r}
+  emacsclient_path = {global_state.config.emacsclient_path!r}
+
+Environment variables (for debugging):
+  EMACS_EDIFF_APPROVAL = {ediff_val_env!r}
+  EMACSCLIENT_PATH = {emacsclient_val_env!r}
+
+Runtime checks:
+  get_emacsclient_path() = {emacsclient_found}
+  is_ediff_approval_enabled() = {ediff_enabled}
+
+All EMACS-related env vars:
+{[k for k in os.environ.keys() if 'EMACS' in k.upper()]}
+"""
+                return [TextContent(type="text", text=diagnostic)]
+
             case _:
                 return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -2184,6 +2459,44 @@ async def call_tool(name: str, arguments: dict):
 
 
 # =============================================================================
+# Resource Content Generators
+# =============================================================================
+
+
+# =============================================================================
+# Resource Content Loaders
+# =============================================================================
+
+
+def load_guide(filename: str) -> str:
+    """Load a guide file from the resources/guides directory."""
+    guide_path = (
+        pathlib.Path(__file__).parent / "resources" / "guides" / filename
+    )
+    return guide_path.read_text()
+
+
+def get_task_format_guide() -> str:
+    """Return comprehensive task format documentation."""
+    return load_guide("task-format.md")
+
+
+def get_journal_format_guide() -> str:
+    """Return comprehensive journal format documentation."""
+    return load_guide("journal-format.md")
+
+
+def get_tool_usage_guide() -> str:
+    """Return comprehensive tool usage documentation."""
+    return load_guide("tool-usage.md")
+
+
+def get_examples_guide() -> str:
+    """Return complete working examples."""
+    return load_guide("examples.md")
+
+
+# =============================================================================
 # Resources
 # =============================================================================
 
@@ -2193,6 +2506,7 @@ async def call_tool(name: str, arguments: dict):
 @server.list_resources()
 async def list_resources():
     return [
+        # Data resources (actual tasks and journal entries)
         Resource(
             uri="org://tasks/active",
             name="Active Tasks",
@@ -2208,27 +2522,88 @@ async def list_resources():
             name="Today's Journal",
             description="Journal entries for today",
         ),
+        # Documentation resources (usage guides and examples)
+        Resource(
+            uri="emacs-org://guide/task-format",
+            name="Task Format Guide",
+            description="Complete specification for task format and properties",
+            mimeType="text/markdown",
+        ),
+        Resource(
+            uri="emacs-org://guide/journal-format",
+            name="Journal Format Guide",
+            description="Complete specification for journal entry format",
+            mimeType="text/markdown",
+        ),
+        Resource(
+            uri="emacs-org://guide/tool-usage",
+            name="Tool Usage Guide",
+            description="When and how to use the emacs-org MCP tools",
+            mimeType="text/markdown",
+        ),
+        Resource(
+            uri="emacs-org://guide/examples",
+            name="Complete Examples",
+            description="Working examples of tasks and journal entries",
+            mimeType="text/markdown",
+        ),
     ]
 
 
 ###############################################################################
 #
 @server.read_resource()
-async def read_resource(uri: str):
-    match uri:
+async def read_resource(uri: AnyUrl):
+    uri_str = str(uri)
+    match uri_str:
         case "org://tasks/active":
-            tasks = list_tasks(ACTIVE_SECTION)
-            return json.dumps([task_to_dict(t) for t in tasks], indent=2)
+            tasks = list_tasks(global_state.config.active_section)
+            content = json.dumps([task_to_dict(t) for t in tasks], indent=2)
+            return [
+                ReadResourceContents(
+                    content=content, mime_type="application/json"
+                )
+            ]
         case "org://tasks/completed":
-            tasks = list_tasks(COMPLETED_SECTION)
-            return json.dumps([task_to_dict(t) for t in tasks], indent=2)
+            tasks = list_tasks(global_state.config.completed_section)
+            content = json.dumps([task_to_dict(t) for t in tasks], indent=2)
+            return [
+                ReadResourceContents(
+                    content=content, mime_type="application/json"
+                )
+            ]
         case "org://journal/today":
             entries = parse_journal_entries(get_journal_path(date.today()))
-            return json.dumps(
+            content = json.dumps(
                 [journal_entry_to_dict(e) for e in entries], indent=2
             )
+            return [
+                ReadResourceContents(
+                    content=content, mime_type="application/json"
+                )
+            ]
+        case "emacs-org://guide/task-format":
+            content = get_task_format_guide()
+            return [
+                ReadResourceContents(content=content, mime_type="text/markdown")
+            ]
+        case "emacs-org://guide/journal-format":
+            content = get_journal_format_guide()
+            return [
+                ReadResourceContents(content=content, mime_type="text/markdown")
+            ]
+        case "emacs-org://guide/tool-usage":
+            content = get_tool_usage_guide()
+            return [
+                ReadResourceContents(content=content, mime_type="text/markdown")
+            ]
+        case "emacs-org://guide/examples":
+            content = get_examples_guide()
+            return [
+                ReadResourceContents(content=content, mime_type="text/markdown")
+            ]
         case _:
-            raise ValueError(f"Unknown resource: {uri}")
+            raise ValueError(f"Unknown resource: {uri_str}")
 
 
 # =============================================================================
@@ -2255,6 +2630,15 @@ async def main():
 ###############################################################################
 #
 if __name__ == "__main__":
-    import asyncio
+    # Configure logging to stderr (MCP clients capture this)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        handlers=[logging.StreamHandler()],  # Outputs to stderr by default
+    )
+
+    # Parse command-line arguments and load configuration
+    args = docopt(__doc__, version="0.1.1")
+    global_state.config = load_config(args)
 
     asyncio.run(main())

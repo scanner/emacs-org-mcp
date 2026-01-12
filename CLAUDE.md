@@ -113,6 +113,28 @@ When `EMACS_EDIFF_APPROVAL=true` is set, create/update operations present change
 - Falls back to auto-approve if emacsclient unavailable
 - Implementation: `emacs_ediff.el` + Python helpers in `server.py`
 
+### MCP Resources for Documentation
+
+The server provides comprehensive documentation via MCP resources, eliminating the need for extensive CLAUDE.md instructions:
+
+**Resource Structure:**
+- `emacs-org://guide/task-format` - Complete task format specification with examples
+- `emacs-org://guide/journal-format` - Complete journal format specification with examples
+- `emacs-org://guide/tool-usage` - When and how to use MCP tools vs direct file manipulation
+- `emacs-org://guide/examples` - Working code examples for common operations
+
+**Implementation:**
+- Guide content stored in `resources/guides/*.md` markdown files
+- Loaded via `load_guide()` helper function at runtime
+- Accessible to Claude via MCP resource protocol
+- Keeps server.py focused on logic, not documentation
+
+**Benefits:**
+- Users need minimal CLAUDE.md configuration
+- Documentation stays in sync with server version
+- Easier to maintain and update
+- More discoverable through MCP resource listing
+
 ## File Locations
 
 | File | Path | Description |

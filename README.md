@@ -221,117 +221,39 @@ When the MCP server is registered as `emacs-org`, Claude sees these tools (12 to
 | `mcp__emacs-org__update_journal_entry` | Update a journal entry |
 | `mcp__emacs-org__search_journal` | Search journal entries |
 
-### Example CLAUDE.md Section
+### MCP Resources
 
-Add this near the top of your `~/.claude/CLAUDE.md`:
+This server provides comprehensive documentation via MCP resources that Claude can access directly. This eliminates the need to add extensive instructions to your `~/.claude/CLAUDE.md` file.
 
-```markdown
-## MCP Server for Tasks and Journal
+**Available Resources:**
+- `emacs-org://guide/task-format` - Complete task format specification
+- `emacs-org://guide/journal-format` - Complete journal format specification
+- `emacs-org://guide/tool-usage` - When and how to use MCP tools
+- `emacs-org://guide/examples` - Working examples of tasks and journal entries
 
-**IMPORTANT**: Use the `emacs-org` MCP server tools for ALL task and journal operations instead of direct file manipulation with Read/Edit tools.
+Claude can read these resources to understand how to properly format tasks and journal entries, when to use MCP tools instead of direct file manipulation, and see complete working examples.
 
-### Available MCP Tools
+**For CLAUDE.md:**
 
-**Task Management** (for `~/org/tasks.org`):
-- `mcp__emacs-org__list_tasks` - List tasks in a section ("Tasks" or "Completed Tasks")
-- `mcp__emacs-org__get_task` - Get a task by identifier
-- `mcp__emacs-org__create_task` - Create a new task in a section
-- `mcp__emacs-org__update_task` - Update an existing task (automatically moves to Completed if status=DONE)
-- `mcp__emacs-org__move_task` - Move a task between sections
-- `mcp__emacs-org__search_tasks` - Search tasks by keyword across all sections
-
-**Journal Management** (for `~/org/journal/YYYYMMDD`):
-- `mcp__emacs-org__list_journal_entries` - List entries for a date
-- `mcp__emacs-org__get_journal_entry` - Get a journal entry
-- `mcp__emacs-org__create_journal_entry` - Create a new journal entry
-- `mcp__emacs-org__update_journal_entry` - Update an existing journal entry
-- `mcp__emacs-org__search_journal` - Search journal entries by keyword (with days_back limit)
-
-### When to Use MCP Tools
-
-- **Always prefer MCP tools** over Read/Edit for tasks.org and journal files
-- MCP tools handle org-mode formatting, file creation, and section management automatically
-- The tools ensure proper structure and avoid formatting errors
-
-### Ediff Approval
-
-When `EMACS_EDIFF_APPROVAL=true` is set:
-- Create and update operations automatically present changes in Emacs ediff
-- User can review and edit changes before approving
-- No special workflow instructions needed - approval is handled automatically
-
-### Task Entry Format for MCP
-
-When creating tasks via `create_task`, provide the task content as an org-mode string:
-```
-
-````markdown
-```org
-** TODO GH-28 Task description
-:PROPERTIES:
-   :ID:       UUID-GENERATED-AUTOMATICALLY
-   :CUSTOM_ID: task-gh-28
-   :CREATED:  <YYYY-MM-DD DDD HH:MM>  (set automatically on creation)
-   :MODIFIED: [YYYY-MM-DD DDD HH:MM]  (updated automatically on modification)
-   :CLOSED:   <YYYY-MM-DD DDD HH:MM>  (set automatically when marked DONE)
-:END:
-
-*** Task items [/]
-- [ ] First item
-- [ ] Second item
-```
-````
-
-**Timestamp Properties** (managed automatically by the MCP server):
-- `:CREATED:` - Active timestamp `<>` set when task is first created
-- `:MODIFIED:` - Inactive timestamp `[]` updated on every task update
-- `:CLOSED:` - Active timestamp `<>` set when task is marked DONE (standard org-mode property)
-  - Preserved when updating a DONE task that stays DONE
-  - Cleared when reopening a DONE task back to TODO
-
-Note: Timestamps are naive (no timezone) as org-mode does not support timezone information.
+Add this minimal section to your `~/.claude/CLAUDE.md`:
 
 ```markdown
-### Journal Entry Parameters
+## Emacs Org-Mode Task and Journal Management
 
-When creating journal entries via `create_journal_entry`:
-- `target_date`: Date object or ISO string (e.g., "2025-12-22")
-- `time_str`: Time in HH:MM format (e.g., "14:30")
-- `headline`: Entry headline (include ticket ID if relevant)
-- `content`: Bullet point content (e.g., "- Did something\n- Did another thing")
-- `tags`: Optional list of tags (e.g., ["daily_summary"])
+**IMPORTANT:** Use the `emacs-org` MCP tools for ALL operations on:
+- `~/org/tasks.org` - Task tracking
+- `~/org/journal/YYYYMMDD` - Journal entries
+
+**Never use Read/Edit/Write tools directly on these files.**
+
+For format specifications, usage guidelines, and examples, read the MCP resources:
+- `emacs-org://guide/task-format`
+- `emacs-org://guide/journal-format`
+- `emacs-org://guide/tool-usage`
+- `emacs-org://guide/examples`
 ```
 
-### Implementation Notes Section
-
-If you have an "Implementation Notes for Claude" section, update it to reference MCP tools:
-
-```markdown
-## Implementation Notes for Claude
-
-**Use MCP tools for all task and journal operations** (see "MCP Server for Tasks and Journal" section above).
-
-When creating journal entries:
-1. Use `mcp__emacs-org__get_journal_entries` to check for existing entries and avoid duplicates
-2. Use `mcp__emacs-org__create_journal_entry` to add new entries
-3. Use current system time for the HH:MM timestamp
-4. Check git branch for ticket ID extraction
-5. The MCP tools handle org-mode formatting automatically
-
-When managing tasks:
-1. Use `mcp__emacs-org__find_task` to locate existing tasks before creating new ones
-2. Use `mcp__emacs-org__create_task` for new tasks
-3. Use `mcp__emacs-org__update_task` to modify tasks or mark them DONE (auto-moves to Completed)
-4. The MCP tools handle section management and formatting automatically
-```
-
-### Why Use MCP Tools Instead of Read/Edit?
-
-1. **Automatic formatting** - The MCP tools ensure correct org-mode syntax
-2. **Section management** - Tasks are automatically placed in the correct section
-3. **Status handling** - Marking a task DONE automatically moves it to Completed Task List
-4. **File creation** - Journal files are created with proper headers if they don't exist
-5. **Safer operations** - Reduces risk of corrupting org file structure
+That's it! Claude will read the detailed documentation from the MCP resources when needed.
 
 ## Testing
 

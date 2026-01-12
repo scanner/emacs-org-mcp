@@ -1,10 +1,10 @@
 """Tests for the factory functions - validates they produce parseable org content."""
 
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
 from orgmunge import Org
-from pytest_mock import MockerFixture
 
 import server
 from tests.conftest import (
@@ -61,28 +61,28 @@ class TestMakeTasksOrg:
     """Tests that make_tasks_org produces valid tasks.org structure."""
 
     def test_tasks_org_has_both_sections(
-        self, tmp_path: Path, mocker: MockerFixture
+        self, tmp_path: Path, config_factory: Callable[[server.Config], None]
     ) -> None:
         """Test that generated tasks.org has Active and Completed sections."""
         tasks_file = tmp_path / "tasks.org"
-        mocker.patch.object(server, "TASKS_FILE", tasks_file)
+        config_factory(server.Config(org_dir=tmp_path))
 
         content = make_tasks_org()
         tasks_file.write_text(content)
 
         org = server.get_org()
-        active = server.find_section(org, server.ACTIVE_SECTION)
-        completed = server.find_section(org, server.COMPLETED_SECTION)
+        active = server.find_section(org, "Tasks")
+        completed = server.find_section(org, "Completed Tasks")
 
         assert active is not None
         assert completed is not None
 
     def test_tasks_org_with_tasks_parseable(
-        self, tmp_path: Path, mocker: MockerFixture
+        self, tmp_path: Path, config_factory: Callable[[server.Config], None]
     ) -> None:
         """Test that tasks.org with tasks can be parsed by server functions."""
         tasks_file = tmp_path / "tasks.org"
-        mocker.patch.object(server, "TASKS_FILE", tasks_file)
+        config_factory(server.Config(org_dir=tmp_path))
 
         task1 = make_task(headline="Task One", custom_id="task-one")
         task2 = make_task(
@@ -91,8 +91,8 @@ class TestMakeTasksOrg:
         content = make_tasks_org(active_tasks=[task1], completed_tasks=[task2])
         tasks_file.write_text(content)
 
-        active_tasks = server.list_tasks(server.ACTIVE_SECTION)
-        completed_tasks = server.list_tasks(server.COMPLETED_SECTION)
+        active_tasks = server.list_tasks("Tasks")
+        completed_tasks = server.list_tasks("Completed Tasks")
 
         assert len(active_tasks) == 1
         assert active_tasks[0].custom_id == "task-one"
@@ -107,12 +107,12 @@ class TestMakeJournalEntry:
     """Tests that make_journal_entry produces valid journal entry format."""
 
     def test_entry_parseable_by_server(
-        self, tmp_path: Path, mocker: MockerFixture
+        self, tmp_path: Path, config_factory: Callable[[server.Config], None]
     ) -> None:
         """Test that journal entry can be parsed by server's parse function."""
         journal_dir = tmp_path / "journal"
         journal_dir.mkdir()
-        mocker.patch.object(server, "JOURNAL_DIR", journal_dir)
+        config_factory(server.Config(org_dir=tmp_path, journal_dir=journal_dir))
 
         entry = make_journal_entry(
             time="14:30",
@@ -146,12 +146,12 @@ class TestMakeJournalFile:
         assert lines[0] == "* 2025-12-22"
 
     def test_journal_file_multiple_entries(
-        self, tmp_path: Path, mocker: MockerFixture
+        self, tmp_path: Path, config_factory: Callable[[server.Config], None]
     ) -> None:
         """Test parsing journal file with multiple entries."""
         journal_dir = tmp_path / "journal"
         journal_dir.mkdir()
-        mocker.patch.object(server, "JOURNAL_DIR", journal_dir)
+        config_factory(server.Config(org_dir=tmp_path, journal_dir=journal_dir))
 
         entries = [
             make_journal_entry("09:00", "Morning standup"),
