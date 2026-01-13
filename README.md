@@ -226,12 +226,10 @@ When the MCP server is registered as `emacs-org`, Claude sees these tools (12 to
 This server provides comprehensive documentation via MCP resources that Claude can access directly. This eliminates the need to add extensive instructions to your `~/.claude/CLAUDE.md` file.
 
 **Available Resources:**
-- `emacs-org://guide/task-format` - Complete task format specification
-- `emacs-org://guide/journal-format` - Complete journal format specification
-- `emacs-org://guide/tool-usage` - When and how to use MCP tools
-- `emacs-org://guide/examples` - Working examples of tasks and journal entries
+- `emacs-org://guide/task-format` - Task format specification
+- `emacs-org://guide/journal-format` - Journal format specification
 
-Claude can read these resources to understand how to properly format tasks and journal entries, when to use MCP tools instead of direct file manipulation, and see complete working examples.
+Claude can read these resources to understand how to properly format tasks and journal entries.
 
 **For CLAUDE.md:**
 
@@ -246,11 +244,9 @@ Add this minimal section to your `~/.claude/CLAUDE.md`:
 
 **Never use Read/Edit/Write tools directly on these files.**
 
-For format specifications, usage guidelines, and examples, read the MCP resources:
+For format specifications, read the MCP resources:
 - `emacs-org://guide/task-format`
 - `emacs-org://guide/journal-format`
-- `emacs-org://guide/tool-usage`
-- `emacs-org://guide/examples`
 ```
 
 That's it! Claude will read the detailed documentation from the MCP resources when needed.

@@ -16,8 +16,6 @@ class TestLoadGuide:
         [
             "task-format.md",
             "journal-format.md",
-            "tool-usage.md",
-            "examples.md",
         ],
     )
     def test_load_guide_returns_file_content(self, filename: str) -> None:
@@ -49,8 +47,6 @@ class TestResourceContentGenerators:
         [
             (server.get_task_format_guide, "task-format.md"),
             (server.get_journal_format_guide, "journal-format.md"),
-            (server.get_tool_usage_guide, "tool-usage.md"),
-            (server.get_examples_guide, "examples.md"),
         ],
     )
     def test_guide_generator_returns_file_content(
@@ -74,15 +70,13 @@ class TestListResources:
         """
         Given list_resources is called
         When it returns the list of available resources
-        Then it should include all four guide resources
+        Then it should include both guide resources
         """
         resources = asyncio.run(server.list_resources())
 
         guide_uris = [
             "emacs-org://guide/task-format",
             "emacs-org://guide/journal-format",
-            "emacs-org://guide/tool-usage",
-            "emacs-org://guide/examples",
         ]
 
         actual_uris = [str(r.uri) for r in resources]
@@ -98,8 +92,6 @@ class TestReadResource:
         [
             ("emacs-org://guide/task-format", "task-format.md"),
             ("emacs-org://guide/journal-format", "journal-format.md"),
-            ("emacs-org://guide/tool-usage", "tool-usage.md"),
-            ("emacs-org://guide/examples", "examples.md"),
         ],
     )
     def test_read_resource_returns_file_content(
@@ -146,8 +138,6 @@ class TestReadResource:
         uri_to_file = {
             "emacs-org://guide/task-format": "task-format.md",
             "emacs-org://guide/journal-format": "journal-format.md",
-            "emacs-org://guide/tool-usage": "tool-usage.md",
-            "emacs-org://guide/examples": "examples.md",
         }
 
         for resource in guide_resources:

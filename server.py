@@ -1999,7 +1999,7 @@ async def list_tools():
             description=(
                 "Get a specific task by identifier (#+NAME like 'task-gh-28', ticket ID like 'GH-28', or headline substring). "
                 "Returns full task content including all properties, subsections, and task items. "
-                "For format specifications and examples, read emacs-org://guide/task-format and emacs-org://guide/examples."
+                "For format specifications, read emacs-org://guide/task-format."
             ),
             inputSchema={
                 "type": "object",
@@ -2026,8 +2026,8 @@ async def list_tools():
                 "Create a new task in a section. Provide the complete org-formatted task entry with PROPERTIES drawer and subsections. "
                 "The :ID: property is auto-generated if not provided. Always search for duplicates before creating. "
                 "CREATED and MODIFIED timestamps are managed automatically. "
-                "For complete format specifications, examples, and best practices, read emacs-org://guide/task-format and emacs-org://guide/examples. "
-                "For usage guidelines, read emacs-org://guide/tool-usage."
+                "For format specifications, read emacs-org://guide/task-format."
+                ""
             ),
             inputSchema={
                 "type": "object",
@@ -2060,8 +2060,8 @@ async def list_tools():
                 "(2) DONE→TODO moves to Tasks section and clears CLOSED timestamp, "
                 "(3) MODIFIED timestamp updated automatically. "
                 "Preserve all PROPERTIES including :ID:, :CUSTOM_ID:, and :CREATED:. "
-                "For format specifications and examples, read emacs-org://guide/task-format and emacs-org://guide/examples. "
-                "For usage guidelines, read emacs-org://guide/tool-usage."
+                "For format specifications, read emacs-org://guide/task-format. "
+                ""
             ),
             inputSchema={
                 "type": "object",
@@ -2111,7 +2111,7 @@ async def list_tools():
             description=(
                 "Search tasks by query string across all sections. Returns complete matching tasks. "
                 "Use this to check for existing tasks before creating new ones, or to find tasks related to a topic. "
-                "For usage guidelines, read emacs-org://guide/tool-usage."
+                ""
             ),
             inputSchema={
                 "type": "object",
@@ -2130,7 +2130,7 @@ async def list_tools():
             description=(
                 "List all journal entries for a specific date. Returns entry times, headlines, content, and tags. "
                 "Use this to check what's already logged before creating new entries to avoid duplicates. "
-                "For format specifications and examples, read emacs-org://guide/journal-format and emacs-org://guide/examples."
+                "For format specifications, read emacs-org://guide/journal-format."
             ),
             inputSchema={
                 "type": "object",
@@ -2146,7 +2146,7 @@ async def list_tools():
             name="get_journal_entry",
             description=(
                 "Get a specific journal entry by date and time or headline substring. Returns complete entry content. "
-                "For format specifications and examples, read emacs-org://guide/journal-format and emacs-org://guide/examples."
+                "For format specifications, read emacs-org://guide/journal-format."
             ),
             inputSchema={
                 "type": "object",
@@ -2170,8 +2170,8 @@ async def list_tools():
                 "Always check for existing entries first using list_journal_entries to avoid duplicates. "
                 "Include ticket IDs (GH-123), PR links ([[url][#123]]), and task links ([[file:~/org/tasks.org::#task-id][Display]]) as appropriate. "
                 "Use current system time for timestamp. Common tags: daily_summary, meeting, decision, blocked. "
-                "For complete format specifications, linking guidelines, and examples, read emacs-org://guide/journal-format and emacs-org://guide/examples. "
-                "For usage guidelines and workflows, read emacs-org://guide/tool-usage."
+                "For format specifications, read emacs-org://guide/journal-format."
+                ""
             ),
             inputSchema={
                 "type": "object",
@@ -2213,7 +2213,7 @@ async def list_tools():
             description=(
                 "Update an existing journal entry with new content. Requires line_number from list_journal_entries. "
                 "Use this to correct or enhance existing entries, or add forgotten details like task links. "
-                "For format specifications and examples, read emacs-org://guide/journal-format and emacs-org://guide/examples."
+                "For format specifications, read emacs-org://guide/journal-format."
             ),
             inputSchema={
                 "type": "object",
@@ -2259,7 +2259,7 @@ async def list_tools():
                 "Search journal entries by query string across recent days. Returns complete matching entries. "
                 "Use this to find past work on a topic, review recent activity, or look up when something was done. "
                 "Searches last 30 days by default. "
-                "For usage guidelines, read emacs-org://guide/tool-usage."
+                ""
             ),
             inputSchema={
                 "type": "object",
@@ -2486,16 +2486,6 @@ def get_journal_format_guide() -> str:
     return load_guide("journal-format.md")
 
 
-def get_tool_usage_guide() -> str:
-    """Return comprehensive tool usage documentation."""
-    return load_guide("tool-usage.md")
-
-
-def get_examples_guide() -> str:
-    """Return complete working examples."""
-    return load_guide("examples.md")
-
-
 # =============================================================================
 # Resources
 # =============================================================================
@@ -2533,18 +2523,6 @@ async def list_resources():
             uri="emacs-org://guide/journal-format",
             name="Journal Format Guide",
             description="Complete specification for journal entry format",
-            mimeType="text/markdown",
-        ),
-        Resource(
-            uri="emacs-org://guide/tool-usage",
-            name="Tool Usage Guide",
-            description="When and how to use the emacs-org MCP tools",
-            mimeType="text/markdown",
-        ),
-        Resource(
-            uri="emacs-org://guide/examples",
-            name="Complete Examples",
-            description="Working examples of tasks and journal entries",
             mimeType="text/markdown",
         ),
     ]
@@ -2589,16 +2567,6 @@ async def read_resource(uri: AnyUrl):
             ]
         case "emacs-org://guide/journal-format":
             content = get_journal_format_guide()
-            return [
-                ReadResourceContents(content=content, mime_type="text/markdown")
-            ]
-        case "emacs-org://guide/tool-usage":
-            content = get_tool_usage_guide()
-            return [
-                ReadResourceContents(content=content, mime_type="text/markdown")
-            ]
-        case "emacs-org://guide/examples":
-            content = get_examples_guide()
             return [
                 ReadResourceContents(content=content, mime_type="text/markdown")
             ]
