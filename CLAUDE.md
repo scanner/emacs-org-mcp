@@ -99,9 +99,9 @@ The `create_task` and `update_task` tools accept `task_entry` as a complete org-
 
 When `update_task` is called and the TODO state changes (e.g., `TODO` → `DONE`), the task automatically moves to the appropriate section (Active → Completed or vice versa).
 
-### Ediff Approval (Optional)
+### Ediff Approval (Enabled by Default)
 
-When `EMACS_EDIFF_APPROVAL=true` is set, create/update operations present changes in Emacs ediff before applying them:
+By default, create/update operations present changes in Emacs ediff before applying them:
 - Opens a new Emacs frame with side-by-side diff (Buffer A: current, Buffer B: proposed)
 - Control buffer appears below the diff buffers in the same frame
 - User can edit the proposed changes (Buffer B) before accepting
@@ -112,6 +112,7 @@ When `EMACS_EDIFF_APPROVAL=true` is set, create/update operations present change
 - Frame and buffers automatically close after decision
 - Falls back to auto-approve if emacsclient unavailable
 - Implementation: `emacs_ediff.el` + Python helpers in `server.py`
+- To disable: Set `EMACS_EDIFF_APPROVAL=false` or use `--no-ediff-approval` flag
 
 ### MCP Resources for Documentation
 
@@ -142,17 +143,17 @@ The server provides comprehensive documentation via MCP resources, eliminating t
 
 ## Configuration
 
-All settings can be overridden via environment variables:
+All settings can be overridden via environment variables or command-line flags:
 
-| Variable | Default | Description |
+| Variable/Flag | Default | Description |
 |----------|---------|-------------|
-| `ORG_DIR` | `~/org` | Base org directory |
-| `JOURNAL_DIR` | `$ORG_DIR/journal` | Journal files directory |
-| `ACTIVE_SECTION` | `Tasks` | Section name for active/TODO tasks |
-| `COMPLETED_SECTION` | `Completed Tasks` | Section name for completed/DONE tasks |
-| `HIGH_LEVEL_SECTION` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
-| `EMACS_EDIFF_APPROVAL` | `false` | Enable visual approval via Emacs ediff (`true`/`1`/`yes` to enable) |
-| `EMACSCLIENT_PATH` | _(searches PATH)_ | Custom path to `emacsclient` executable (optional) |
+| `ORG_DIR` / `--org-dir` | `~/org` | Base org directory |
+| `JOURNAL_DIR` / `--journal-dir` | `$ORG_DIR/journal` | Journal files directory |
+| `ACTIVE_SECTION` / `--active-section` | `Tasks` | Section name for active/TODO tasks |
+| `COMPLETED_SECTION` / `--completed-section` | `Completed Tasks` | Section name for completed/DONE tasks |
+| `HIGH_LEVEL_SECTION` / `--high-level-section` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
+| `EMACS_EDIFF_APPROVAL` / `--ediff-approval` / `--no-ediff-approval` | `true` | Visual approval via Emacs ediff (enabled by default, use `false` or `--no-ediff-approval` to disable) |
+| `EMACSCLIENT_PATH` / `--emacsclient-path` | _(searches PATH)_ | Custom path to `emacsclient` executable (optional) |
 
 ## Task Format Reference
 

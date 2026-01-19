@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 
+import pytest
 from pytest_mock import MockerFixture
 
 import server
@@ -22,7 +23,7 @@ class TestLoadConfig:
         assert config.org_dir == Path.home() / "org"
         assert config.journal_dir == Path.home() / "org" / "journal"
         assert config.emacsclient_path == Path("/usr/local/bin/emacsclient")
-        assert config.ediff_approval is False
+        assert config.ediff_approval is True  # Default is now True
         assert config.active_section == "Tasks"
         assert config.completed_section == "Completed Tasks"
         assert config.high_level_section == "High Level Tasks (in order)"
@@ -243,3 +244,80 @@ class TestLoadConfig:
         config = server.load_config(args)
         assert config.org_dir == Path("/another/org")
         assert config.journal_dir == Path("/separate/journal")
+
+    @pytest.mark.parametrize(
+        "env_value,cli_arg,cli_value,expected,description",
+        [
+            # Test default behavior (no args, no env)
+            (None, None, None, True, "default-is-true"),
+            # Test --no-ediff-approval flag
+            (
+                None,
+                "--no-ediff-approval",
+                True,
+                False,
+                "no-ediff-flag-disables",
+            ),
+            # Test --ediff-approval flag (backwards compatibility)
+            (None, "--ediff-approval", True, True, "ediff-flag-enables"),
+            # Test --no-ediff-approval overrides env=true
+            (
+                "true",
+                "--no-ediff-approval",
+                True,
+                False,
+                "no-ediff-overrides-env-true",
+            ),
+            # Test --ediff-approval overrides env=false
+            (
+                "false",
+                "--ediff-approval",
+                True,
+                True,
+                "ediff-overrides-env-false",
+            ),
+            # Test env=false overrides default
+            ("false", None, None, False, "env-false-overrides-default"),
+            # Test env=true keeps default
+            ("true", None, None, True, "env-true-keeps-default"),
+        ],
+    )
+    def test_ediff_approval_flag_combinations(
+        self,
+        mocker: MockerFixture,
+        env_value: str | None,
+        cli_arg: str | None,
+        cli_value: bool | None,
+        expected: bool,
+        description: str,
+    ) -> None:
+        """
+        Test various combinations of environment variables and CLI flags for ediff_approval.
+
+        This parametrized test covers:
+        - Default behavior (ediff enabled)
+        - --no-ediff-approval flag disables ediff
+        - --ediff-approval flag explicitly enables ediff
+        - CLI flags override environment variables
+        - Environment variables override defaults
+        """
+        # Setup environment
+        if env_value is not None:
+            mocker.patch.dict(os.environ, {"EMACS_EDIFF_APPROVAL": env_value})
+        else:
+            mocker.patch.dict(os.environ, {}, clear=True)
+
+        # Setup CLI args
+        args: dict[str, str | bool | None] = {}
+        if cli_arg is not None:
+            args[cli_arg] = cli_value
+
+        # Execute
+        config = server.load_config(args)
+
+        # Assert
+        assert config.ediff_approval is expected, (
+            f"Test '{description}' failed: "
+            f"env={env_value}, cli_arg={cli_arg}, cli_value={cli_value}, "
+            f"expected={expected}, got={config.ediff_approval}"
+        )

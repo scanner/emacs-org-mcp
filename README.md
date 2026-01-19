@@ -34,14 +34,14 @@ There is also the  benefit of reliability: The MCP handles org-mode parsing corr
 
 - **Task Management** (`~/org/tasks.org`)
   - List, create, update, and search tasks
-  - Optional visual approval via Emacs ediff (shows diff in Emacs, allows editing before applying)
+  - Visual approval via Emacs ediff (enabled by default, shows diff in Emacs, allows editing before applying)
   - Move tasks between Active and Completed sections
   - Automatic section movement when task status changes (TODO → DONE)
   - Find tasks by `:CUSTOM_ID:`, JIRA ticket ID, or headline
 
 - **Journal Management** (`~/org/journal/`)
   - List, create, update, and search journal entries
-  - Optional visual approval via Emacs ediff (shows diff in Emacs, allows editing before applying)
+  - Visual approval via Emacs ediff (enabled by default, shows diff in Emacs, allows editing before applying)
   - Support for tags (e.g., `:daily_summary:`)
   - Date-based file organization (YYYYMMDD format)
 
@@ -144,12 +144,12 @@ Or edit `~/.claude.json`:
 | `ACTIVE_SECTION` | `Tasks` | Section name for active/TODO tasks |
 | `COMPLETED_SECTION` | `Completed Tasks` | Section name for completed/DONE tasks |
 | `HIGH_LEVEL_SECTION` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
-| `EMACS_EDIFF_APPROVAL` | `false` | Enable visual approval via Emacs ediff (`true`/`1`/`yes` to enable) |
+| `EMACS_EDIFF_APPROVAL` | `true` | Visual approval via Emacs ediff (enabled by default, set to `false` to disable) |
 | `EMACSCLIENT_PATH` | _(searches PATH)_ | Custom path to `emacsclient` executable (optional) |
 
 ## Ediff Approval Feature
 
-When `EMACS_EDIFF_APPROVAL=true` is set, task and journal create/update operations will present changes visually in Emacs using ediff before applying them. This provides a more interactive approval workflow compared to text-based previews.
+By default, task and journal create/update operations present changes visually in Emacs using ediff before applying them. This provides an interactive approval workflow where you can review and edit changes before they're saved.
 
 **Features:**
 - Visual side-by-side diff in Emacs
@@ -161,21 +161,26 @@ When `EMACS_EDIFF_APPROVAL=true` is set, task and journal create/update operatio
 
 1. **Place `emacs_ediff.el` in the project root** (already included)
 
-2. **Enable the feature** by setting the environment variable:
+2. **Ensure Emacs is running** - The MCP server communicates with Emacs via `emacsclient`
+
+3. **Optional configuration** (only needed if you want to customize):
    ```json
    {
      "mcpServers": {
        "emacs-org": {
          "env": {
-           "EMACS_EDIFF_APPROVAL": "true",
-           "EMACSCLIENT_PATH": "/path/to/emacsclient"  // optional
+           "EMACS_EDIFF_APPROVAL": "false",  // Disable ediff approval
+           "EMACSCLIENT_PATH": "/path/to/emacsclient"  // Custom emacsclient path (optional)
          }
        }
      }
    }
    ```
 
-3. **Ensure Emacs is running** - The MCP server communicates with Emacs via `emacsclient`
+   Or use command-line flags:
+   ```bash
+   uv run server.py --no-ediff-approval  # Disable ediff approval
+   ```
 
 **Usage:**
 

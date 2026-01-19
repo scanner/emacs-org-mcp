@@ -2,14 +2,15 @@
 """MCP Server for Emacs Org-Mode Tasks and Journal Management
 
 Usage:
-  server.py [--ediff-approval] [--org-dir=<path>] [--journal-dir=<path>]
+  server.py [--ediff-approval] [--no-ediff-approval] [--org-dir=<path>] [--journal-dir=<path>]
             [--active-section=<name>] [--completed-section=<name>]
             [--high-level-section=<name>] [--emacsclient-path=<path>]
   server.py (-h | --help)
   server.py --version
 
 Options:
-  --ediff-approval              Enable ediff approval
+  --ediff-approval              Enable ediff approval (default, kept for backwards compatibility)
+  --no-ediff-approval           Disable ediff approval
   --org-dir=<path>              Base org directory [default: ~/org]
   --journal-dir=<path>          Journal directory (defaults to <org-dir>/journal)
   --active-section=<name>       Active tasks section [default: Tasks]
@@ -85,7 +86,7 @@ class Config:
     org_dir: Path = Path.home() / "org"
     journal_dir: Path = Path.home() / "org" / "journal"
     emacsclient_path: Path = Path("/usr/local/bin/emacsclient")
-    ediff_approval: bool = False
+    ediff_approval: bool = True
     active_section: str = "Tasks"
     completed_section: str = "Completed Tasks"
     high_level_section: str = "High Level Tasks (in order)"
@@ -127,6 +128,7 @@ CLI_ARG_TO_CONFIG = {
     "--journal-dir": "journal_dir",
     "--emacsclient-path": "emacsclient_path",
     "--ediff-approval": "ediff_approval",
+    "--no-ediff-approval": "ediff_approval",
     "--active-section": "active_section",
     "--completed-section": "completed_section",
     "--high-level-section": "high_level_section",
@@ -184,7 +186,11 @@ def load_config(args: dict[str, str | bool | None]) -> Config:
             match field_type:
                 case builtins.bool:
                     # Boolean flags are directly True/False from docopt
-                    config_map[config_field] = bool(cli_value)
+                    # Special handling: --no-ediff-approval inverts the value
+                    if cli_arg == "--no-ediff-approval":
+                        config_map[config_field] = not bool(cli_value)
+                    else:
+                        config_map[config_field] = bool(cli_value)
                 case pathlib.Path:
                     config_map[config_field] = Path(str(cli_value)).expanduser()
                 case _:
