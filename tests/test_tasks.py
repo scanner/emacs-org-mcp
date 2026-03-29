@@ -311,7 +311,7 @@ This task has no properties drawer at all.
         # Add it to the Completed section
         content = server.global_state.config.tasks_file.read_text()
         content = re.sub(
-            rf"(\* {"Completed Tasks"}\n)",
+            rf"(\* {'Completed Tasks'}\n)",
             rf"\1{task_without_props}\n",
             content,
         )
@@ -357,7 +357,7 @@ This task is DONE but has no CLOSED timestamp.
         # Add it to the Completed section
         content = server.global_state.config.tasks_file.read_text()
         content = re.sub(
-            rf"(\* {"Completed Tasks"}\n)",
+            rf"(\* {'Completed Tasks'}\n)",
             rf"\1{task_no_closed}\n",
             content,
         )
@@ -701,7 +701,7 @@ This task has an explicit ID.
         content = server.global_state.config.tasks_file.read_text()
 
         content = re.sub(
-            rf"(\* {"Tasks"}\n)",
+            rf"(\* {'Tasks'}\n)",
             rf"\1{task_with_id}\n",
             content,
         )
@@ -740,7 +740,7 @@ Finding this task.
         content = server.global_state.config.tasks_file.read_text()
 
         content = re.sub(
-            rf"(\* {"Tasks"}\n)",
+            rf"(\* {'Tasks'}\n)",
             rf"\1{task_with_id}\n",
             content,
         )
@@ -933,7 +933,7 @@ This task is DONE but has no CLOSED timestamp.
         # Add it to the Active section
         content = server.global_state.config.tasks_file.read_text()
         content = re.sub(
-            rf"(\* {"Tasks"}\n)",
+            rf"(\* {'Tasks'}\n)",
             rf"\1{task_done_no_closed}\n",
             content,
         )

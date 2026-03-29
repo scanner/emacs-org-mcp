@@ -226,11 +226,12 @@ def temp_org_dir(
     journal_dir = tmp_path / "journal"
     journal_dir.mkdir()
 
-    # Configure server to use this temp directory
+    # Configure server to use this temp directory (ediff disabled for tests)
     config_factory(
         server.Config(
             org_dir=tmp_path,
             journal_dir=journal_dir,
+            ediff_approval=False,
         )
     )
 

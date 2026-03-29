@@ -3,6 +3,8 @@
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+
 import server
 from tests.conftest import (
     JournalFilesInfo,
@@ -238,6 +240,55 @@ class TestCreateJournalEntry:
         assert content.startswith("* 2025-05-20")
 
 
+class TestFindJournalEntry:
+    """Tests for find_journal_entry function."""
+
+    @pytest.fixture()
+    def multi_entry_file(self, empty_journal_dir: Path) -> Path:
+        """Journal file with unique and duplicate-time entries for lookup tests."""
+        journal_file = empty_journal_dir / "20250810"
+        journal_file.write_text(
+            "* 2025-08-10\n\n"
+            "** 09:00 Morning standup\n"
+            "- Discussed priorities\n\n"
+            "** 14:30 First afternoon task\n"
+            "- Content A\n\n"
+            "** 14:30 Second afternoon task\n"
+            "- Content B\n"
+        )
+        return journal_file
+
+    @pytest.mark.parametrize(
+        "time_str, headline, expected_in_headline",
+        [
+            ("09:00", None, "Morning standup"),
+            ("14:30", "Second", "Second afternoon task"),
+        ],
+    )
+    def test_find_by_time_and_headline(
+        self,
+        multi_entry_file: Path,
+        time_str: str,
+        headline: str | None,
+        expected_in_headline: str,
+    ) -> None:
+        """Test finding entries by time alone or with headline disambiguation."""
+        entry = server.find_journal_entry(multi_entry_file, time_str, headline)
+        assert expected_in_headline in entry.headline
+
+    def test_find_by_time_not_found(self, multi_entry_file: Path) -> None:
+        """Test that finding a nonexistent time raises ValueError."""
+        with pytest.raises(ValueError, match="No journal entry found"):
+            server.find_journal_entry(multi_entry_file, "23:59")
+
+    def test_find_raises_on_ambiguous_time(
+        self, multi_entry_file: Path
+    ) -> None:
+        """Test that ambiguous time without headline raises ValueError."""
+        with pytest.raises(ValueError, match="Multiple entries"):
+            server.find_journal_entry(multi_entry_file, "14:30")
+
+
 class TestUpdateJournalEntry:
     """Tests for update_journal_entry function."""
 
@@ -252,7 +303,6 @@ class TestUpdateJournalEntry:
 
         result = server.update_journal_entry(
             file_path=sample_journal_files["today_file"],
-            line_number=first_entry.line_number,
             time_str=first_entry.time,
             headline="Updated headline",
             content=first_entry.content,
@@ -279,7 +329,6 @@ class TestUpdateJournalEntry:
 
         server.update_journal_entry(
             file_path=sample_journal_files["today_file"],
-            line_number=first_entry.line_number,
             time_str=first_entry.time,
             headline=first_entry.headline,
             content="- New bullet point\n- Another new point",
@@ -301,7 +350,6 @@ class TestUpdateJournalEntry:
 
         server.update_journal_entry(
             file_path=sample_journal_files["today_file"],
-            line_number=first_entry.line_number,
             time_str=first_entry.time,
             headline=first_entry.headline,
             content=first_entry.content,
@@ -327,7 +375,6 @@ class TestUpdateJournalEntry:
 
         server.update_journal_entry(
             file_path=sample_journal_files["today_file"],
-            line_number=first_entry.line_number,
             time_str=first_entry.time,
             headline="Modified first entry",
             content="- Modified content",
@@ -343,6 +390,117 @@ class TestUpdateJournalEntry:
         # Second entry unchanged
         assert updated_entries[1].headline == second_entry.headline
         assert updated_entries[1].time == second_entry.time
+
+    def test_update_preserves_blank_line_separators(
+        self, sample_journal_files: JournalFilesInfo
+    ) -> None:
+        """Test that updating an entry preserves blank lines between entries.
+
+        Bug: to_org() strips trailing whitespace, but the old entry range
+        includes trailing blank lines. The splice eats the separator.
+        """
+        original_entries = server.parse_journal_entries(
+            sample_journal_files["today_file"]
+        )
+        first_entry = original_entries[0]
+        second_entry = original_entries[1]
+
+        server.update_journal_entry(
+            file_path=sample_journal_files["today_file"],
+            time_str=first_entry.time,
+            headline="Updated first entry",
+            content="- New content",
+        )
+
+        updated_content = sample_journal_files["today_file"].read_text()
+
+        # The second entry should still be preceded by a blank line.
+        # Use to_org() to get the exact heading line (including tags).
+        second_heading_line = second_entry.to_org().split("\n")[0]
+        assert f"\n\n{second_heading_line}" in updated_content, (
+            "Blank line separator before second entry was lost after update.\n"
+            f"Looking for blank line before: {second_heading_line}\n"
+            f"File content:\n{updated_content}"
+        )
+
+    @pytest.mark.parametrize("filename", ["20250810.org", "20250810"])
+    def test_update_entry_file_date(
+        self, empty_journal_dir: Path, filename: str
+    ) -> None:
+        """Test that file_date is YYYYMMDD regardless of .org extension."""
+        journal_file = empty_journal_dir / filename
+        journal_file.write_text(
+            "* 2025-08-10\n\n** 14:30 Original headline\n- Original content\n"
+        )
+
+        _, new_entry, _ = server.update_journal_entry(
+            file_path=journal_file,
+            time_str="14:30",
+            headline="Updated headline",
+            content="- Updated content",
+        )
+
+        assert new_entry.file_date == "20250810", (
+            f"Expected file_date='20250810', got '{new_entry.file_date}'"
+        )
+
+    @pytest.mark.parametrize(
+        "existing_time, existing_headline, new_time, new_headline, expected_headlines",
+        [
+            # Change time on a unique entry (09:00 is unique in the file)
+            (
+                "09:00",
+                None,
+                "09:30",
+                "Morning updated",
+                ["09:30 Morning updated", "First task", "Second task"],
+            ),
+            # Disambiguate by headline when two entries share a time
+            (
+                None,
+                "Second task",
+                "14:30",
+                "Second task updated",
+                ["Morning standup", "First task", "Second task updated"],
+            ),
+        ],
+        ids=["change-time", "disambiguate-by-headline"],
+    )
+    def test_update_lookup_by_time_and_headline(
+        self,
+        empty_journal_dir: Path,
+        existing_time: str | None,
+        existing_headline: str | None,
+        new_time: str,
+        new_headline: str,
+        expected_headlines: list[str],
+    ) -> None:
+        """Test updating entries found by existing_time and/or existing_headline."""
+        journal_file = empty_journal_dir / "20250810"
+        journal_file.write_text(
+            "* 2025-08-10\n\n"
+            "** 09:00 Morning standup\n"
+            "- Discussed priorities\n\n"
+            "** 14:30 First task\n"
+            "- Content A\n\n"
+            "** 14:30 Second task\n"
+            "- Content B\n"
+        )
+
+        server.update_journal_entry(
+            file_path=journal_file,
+            time_str=new_time,
+            headline=new_headline,
+            content="- Updated content",
+            existing_time=existing_time,
+            existing_headline=existing_headline,
+        )
+
+        updated_entries = server.parse_journal_entries(journal_file)
+        for entry, expected in zip(
+            updated_entries, expected_headlines, strict=False
+        ):
+            assert expected in f"{entry.time} {entry.headline}"
 
 
 class TestSearchJournal:
