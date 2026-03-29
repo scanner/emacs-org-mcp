@@ -43,22 +43,21 @@ make test-mcp  # Shortcut for the above
 **IMPORTANT**: Run linting after all code modifications to ensure code quality.
 
 ```bash
-# Run all linters (black, isort, ruff, mypy, pre-commit hooks)
+# Run all linters (ruff check, ruff format, mypy, pre-commit hooks)
 # NOTE: Requires gcloud auth - run `gcloud auth login` first if needed
 make lint
 
 # Run individual linters
-make black   # Code formatting
-make isort   # Import sorting
-make ruff    # Fast Python linter
-make mypy    # Type checking
+make ruff-format  # Code formatting (replaces black + isort)
+make ruff-check   # Linting
+make mypy         # Type checking
 ```
 
 Linting is configured via:
 - `.pre-commit-config.yaml` - Pre-commit hook definitions
-- `pyproject.toml` - Tool configurations (black, isort, ruff, mypy)
+- `pyproject.toml` - Tool configurations (ruff, mypy)
 
-Line length is set to 100 characters. E501 (line too long) is ignored in ruff since black handles formatting.
+Line length is set to 80 characters. E501 (line too long) is ignored in ruff since ruff format handles it.
 
 ## Project Structure
 

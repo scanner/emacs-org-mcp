@@ -131,9 +131,9 @@ class TestLoadConfig:
         for value in ["true", "True", "TRUE", "1", "yes", "Yes", "YES"]:
             mocker.patch.dict(os.environ, {"EMACS_EDIFF_APPROVAL": value})
             config = server.load_config({})
-            assert (
-                config.ediff_approval is True
-            ), f"Expected True for value: {value}"
+            assert config.ediff_approval is True, (
+                f"Expected True for value: {value}"
+            )
 
     def test_bool_type_conversion_false_values(
         self, mocker: MockerFixture
@@ -146,9 +146,9 @@ class TestLoadConfig:
         for value in ["false", "False", "FALSE", "0", "no", "No", "NO", ""]:
             mocker.patch.dict(os.environ, {"EMACS_EDIFF_APPROVAL": value})
             config = server.load_config({})
-            assert (
-                config.ediff_approval is False
-            ), f"Expected False for value: {value}"
+            assert config.ediff_approval is False, (
+                f"Expected False for value: {value}"
+            )
 
     def test_path_expansion_tilde(self, mocker: MockerFixture) -> None:
         """

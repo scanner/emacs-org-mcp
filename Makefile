@@ -4,7 +4,7 @@ SERVER_SCRIPT := server.py
 UV_PATH := $(shell which uv)
 CLAUDE_CONFIG := $(HOME)/Library/Application Support/Claude/claude_desktop_config.json
 
-.PHONY: setup sync lint black test mcp-install mcp-uninstall mcp-status mcp-install-desktop mcp-uninstall-desktop clean help install uninstall
+.PHONY: setup sync lint ruff-format ruff-check test mcp-install mcp-uninstall mcp-status mcp-install-desktop mcp-uninstall-desktop clean help install uninstall
 
 setup: ## Initial project setup: install dependencies and pre-commit hooks
 	echo "Installing dependencies (including dev)..."; \
@@ -16,22 +16,19 @@ setup: ## Initial project setup: install dependencies and pre-commit hooks
 sync: ## Sync dependencies
 	uv sync --all-extras
 
-lint: ## Run all pre-commit hooks (black, isort, ruff, mypy, etc)
+lint: sync ## Run all pre-commit hooks (black, isort, ruff, mypy, etc)
 	uv run pre-commit run --all-files
 
-black: ## Run just black formatter
-	uv run pre-commit run --all-files black
+ruff-format: sync ## Run just ruff formatter
+	uv run pre-commit run --all-files ruff-format
 
-isort: ## Run just isort import sorter
-	uv run pre-commit run --all-files isort
+ruff-check: sync ## Run just ruff linter
+	uv run pre-commit run --all-files ruff
 
-ruff: ## Run just ruff linter
-	uv run pre-commit run --all-files ruff-check
-
-mypy: ## Run just mypy type checker
+mypy: sync ## Run just mypy type checker
 	uv run mypy .
 
-test: ## Run pytest tests
+test: sync ## Run pytest tests
 	uv run pytest -v
 
 test-mcp: ## Test the MCP server with a simple tools/list request

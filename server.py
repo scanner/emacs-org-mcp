@@ -1796,24 +1796,82 @@ def create_journal_entry(
 
 ###############################################################################
 #
+def find_journal_entry(
+    file_path: Path,
+    time_str: str,
+    headline: str | None = None,
+) -> JournalEntry:
+    """
+    Find a journal entry by time, using headline to disambiguate if needed.
+
+    Args:
+        file_path: Path to the journal file
+        time_str: Time in HH:MM format to match
+        headline: Optional headline substring to disambiguate when multiple
+                  entries share the same time
+
+    Returns:
+        The matching JournalEntry
+
+    Raises:
+        ValueError: If no entry matches, or multiple entries match the time
+                    and no headline was provided to disambiguate
+    """
+    entries = parse_journal_entries(file_path)
+    matches = [e for e in entries if e.time == time_str]
+
+    if not matches:
+        raise ValueError(f"No journal entry found at time {time_str}")
+
+    if len(matches) == 1:
+        return matches[0]
+
+    # Multiple entries at this time — use headline to disambiguate
+    if headline:
+        headline_matches = [
+            e for e in matches if headline.lower() in e.headline.lower()
+        ]
+        if len(headline_matches) == 1:
+            return headline_matches[0]
+        if not headline_matches:
+            raise ValueError(
+                f"Multiple entries at {time_str} but none match headline '{headline}'"
+            )
+        raise ValueError(
+            f"Multiple entries at {time_str} match headline '{headline}' — "
+            "provide a more specific headline"
+        )
+
+    headlines = [e.headline for e in matches]
+    raise ValueError(
+        f"Multiple entries at {time_str}: {headlines}. "
+        "Provide 'existing_headline' to disambiguate."
+    )
+
+
+###############################################################################
+#
 def update_journal_entry(
     file_path: Path,
-    line_number: int,
     time_str: str,
     headline: str,
     content: str,
     tags: list[str] | None = None,
+    existing_time: str | None = None,
+    existing_headline: str | None = None,
 ) -> tuple[JournalEntry, JournalEntry, date]:
     """
-    Update an existing journal entry by line number.
+    Update an existing journal entry, found by time and optional headline.
 
     Args:
         file_path: Path to the journal file
-        line_number: Line number where entry starts
         time_str: New time in HH:MM format
         headline: New headline text
         content: New body content
         tags: Optional new tags list
+        existing_time: Time of entry to update (defaults to time_str if not provided)
+        existing_headline: Headline substring to disambiguate if multiple entries
+                          share the same time
 
     Returns:
         Tuple of (old_entry, new_entry, date)
@@ -1822,11 +1880,12 @@ def update_journal_entry(
         Creates backup before modification.
         Replaces entry while preserving other entries.
     """
+    lookup_time = existing_time or time_str
+    old_entry = find_journal_entry(file_path, lookup_time, existing_headline)
+    line_number = old_entry.line_number
+
     file_content = file_path.read_text(encoding="utf-8")
     lines = file_content.split("\n")
-
-    # Parse existing entry to get old content
-    old_entry, _ = parse_journal_entry(lines, line_number, file_path.name)
 
     entry_start = line_number
     entry_end = entry_start + 1
@@ -1838,6 +1897,9 @@ def update_journal_entry(
             break
         entry_end += 1
 
+    # Strip .org extension if present to get YYYYMMDD
+    date_str = file_path.stem if file_path.suffix == ".org" else file_path.name
+
     tags = tags or []
     new_entry = JournalEntry(
         time=time_str,
@@ -1845,14 +1907,11 @@ def update_journal_entry(
         tags=tags,
         content=content,
         line_number=line_number,
-        file_date=file_path.name,
+        file_date=date_str,
     )
 
     old_entry_org = old_entry.to_org()
     new_entry_org = new_entry.to_org()
-
-    # Context: date + time (e.g., "20250107-1430")
-    date_str = file_path.stem if file_path.suffix == ".org" else file_path.name
     context_name = f"{date_str}-{time_str.replace(':', '')}"
 
     # Request approval via ediff
@@ -1866,6 +1925,12 @@ def update_journal_entry(
         raise ValueError("User rejected journal entry update")
 
     new_entry_lines = final_entry_text.split("\n")
+
+    # Preserve blank line separator: if the old entry had a trailing blank line
+    # before the next entry/heading, keep it so entries don't run together.
+    if entry_end < len(lines) and lines[entry_end - 1] == "":
+        new_entry_lines.append("")
+
     new_lines = lines[:entry_start] + new_entry_lines + lines[entry_end:]
 
     backup_path = backup_file(file_path)
@@ -1875,8 +1940,7 @@ def update_journal_entry(
     if backup_path != file_path and backup_path.exists():
         backup_path.unlink()
 
-    # Parse date from filename (YYYYMMDD or YYYYMMDD.org)
-    date_str = file_path.stem if file_path.suffix == ".org" else file_path.name
+    # Parse date from filename (YYYYMMDD)
     target_date = date(
         int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8])
     )
@@ -2217,7 +2281,8 @@ async def list_tools():
         Tool(
             name="update_journal_entry",
             description=(
-                "Update an existing journal entry with new content. Requires line_number from list_journal_entries. "
+                "Update an existing journal entry with new content. Finds the entry by time (HH:MM), "
+                "using existing_headline to disambiguate if multiple entries share the same time. "
                 "Use this to correct or enhance existing entries, or add forgotten details like task links. "
                 "For format specifications, read emacs-org://guide/journal-format."
             ),
@@ -2228,13 +2293,9 @@ async def list_tools():
                         "type": "string",
                         "description": "Date in YYYY-MM-DD format",
                     },
-                    "line_number": {
-                        "type": "integer",
-                        "description": "Line number of entry to update (from list_journal_entries)",
-                    },
                     "time": {
                         "type": "string",
-                        "description": "Time in HH:MM format (24-hour)",
+                        "description": "New time in HH:MM format (24-hour)",
                     },
                     "headline": {
                         "type": "string",
@@ -2249,10 +2310,17 @@ async def list_tools():
                         "items": {"type": "string"},
                         "description": "Updated tags (replaces existing)",
                     },
+                    "existing_time": {
+                        "type": "string",
+                        "description": "Time (HH:MM) of the entry to update. Only needed if changing the time; defaults to 'time'.",
+                    },
+                    "existing_headline": {
+                        "type": "string",
+                        "description": "Headline substring to disambiguate when multiple entries share the same time.",
+                    },
                 },
                 "required": [
                     "date",
-                    "line_number",
                     "time",
                     "headline",
                     "content",
@@ -2404,11 +2472,12 @@ async def call_tool(name: str, arguments: dict):
                 target_date = date.fromisoformat(arguments["date"])
                 old_entry, new_entry, result_date = update_journal_entry(
                     get_journal_path(target_date),
-                    arguments["line_number"],
                     arguments["time"],
                     arguments["headline"],
                     arguments["content"],
                     arguments.get("tags"),
+                    arguments.get("existing_time"),
+                    arguments.get("existing_headline"),
                 )
                 output = format_journal_update_result(
                     old_entry, new_entry, result_date
@@ -2445,7 +2514,7 @@ Runtime checks:
   is_ediff_approval_enabled() = {ediff_enabled}
 
 All EMACS-related env vars:
-{[k for k in os.environ.keys() if 'EMACS' in k.upper()]}
+{[k for k in os.environ.keys() if "EMACS" in k.upper()]}
 """
                 return [TextContent(type="text", text=diagnostic)]
 

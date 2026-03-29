@@ -148,6 +148,6 @@ class TestReadResource:
             # read_resource now returns list[ReadResourceContents]
             assert isinstance(result, list)
             assert len(result) == 1
-            assert (
-                result[0].content == expected
-            ), f"Resource {uri_str} should return file contents"
+            assert result[0].content == expected, (
+                f"Resource {uri_str} should return file contents"
+            )

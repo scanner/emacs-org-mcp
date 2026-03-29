@@ -23,6 +23,17 @@
 - Task link: `[[file:~/org/tasks.org::#task-gh-123][Display]]`
 - PR link: `[[https://github.com/org/repo/pull/123][#123]]`
 
+## Updating Entries
+
+The `update_journal_entry` tool finds entries by **time** (HH:MM). Pass the
+entry's current time and the tool will locate it automatically.
+
+- If only one entry exists at that time, no further identification is needed.
+- If multiple entries share the same time, provide `existing_headline` with a
+  substring of the entry's headline to disambiguate.
+- To change an entry's time, pass the original time as `existing_time` and the
+  new time as `time`.
+
 ## Guidelines
 
 - Check existing entries before creating (avoid duplicates)

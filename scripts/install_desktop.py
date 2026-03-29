@@ -2,6 +2,7 @@
 """
 Install or uninstall emacs-org MCP server in Claude Desktop configuration.
 """
+
 import json
 import os
 import sys
@@ -11,7 +12,7 @@ def install_server(config_path, mcp_name, uv_path, root_dir, server_script):
     """Install the MCP server configuration."""
     # Read existing config or create new one
     if os.path.exists(config_path):
-        with open(config_path, "r") as f:
+        with open(config_path) as f:
             config = json.load(f)
     else:
         config = {}
@@ -48,7 +49,7 @@ def uninstall_server(config_path, mcp_name):
         print(f'MCP server "{mcp_name}" is not installed.')
         return
 
-    with open(config_path, "r") as f:
+    with open(config_path) as f:
         config = json.load(f)
 
     # Check if mcpServers exists and contains our server

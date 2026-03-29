@@ -7,7 +7,7 @@
 #   uv run pre-commit run --all-files
 #
 # To run a single check on all files:
-#   uv run pre-commit run --all-files black
+#   uv run pre-commit run --all-files ruff-format
 #
 ---
 repos:
@@ -19,23 +19,12 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
 
-  - repo: https://github.com/ambv/black
-    rev: 25.1.0
-    hooks:
-      - id: black
-        name: Check code formatting (black)
-        language_version: python3.13
-
-  - repo: https://github.com/pycqa/isort
-    rev: 6.0.1
-    hooks:
-      - id: isort
-        name: isort (python)
-
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.0
     hooks:
-      - id: ruff-check
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
 
   - repo: local
     hooks:
