@@ -41,7 +41,7 @@ import logging
 from docopt import docopt
 from mcp.server import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import ServerCapabilities
+from mcp.types import ResourcesCapability, ServerCapabilities, ToolsCapability
 
 # project imports — importing mcp_server registers all MCP tool/resource handlers
 import mcp_server  # noqa: F401
@@ -55,7 +55,10 @@ async def main() -> None:
     init_options = InitializationOptions(
         server_name="emacs-org-mode",
         server_version="0.1.0",
-        capabilities=ServerCapabilities(),
+        capabilities=ServerCapabilities(
+            resources=ResourcesCapability(),
+            tools=ToolsCapability(),
+        ),
     )
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, init_options)

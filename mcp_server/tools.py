@@ -32,6 +32,7 @@ from mcp_server.projects import (
     get_project,
     link_task_to_project,
     list_projects,
+    regenerate_project_index,
     search_projects,
     update_project,
 )
@@ -561,6 +562,17 @@ async def handle_list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="regenerate_project_index",
+            description=(
+                "Regenerate ~/org/projects/index.org from all project files. "
+                "Call this once after initial setup or if the index becomes out of sync."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
             name="diagnostic_env",
             description="Diagnostic tool to check environment variables for ediff approval",
             inputSchema={
@@ -768,6 +780,18 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     TextContent(
                         type="text",
                         text=f"Task linked to project successfully.\n\n{new_content}",
+                    )
+                ]
+
+            case "regenerate_project_index":
+                regenerate_project_index()
+                config = global_state.config
+                index_path = config.projects_dir / "index.org"
+                projects = list_projects()
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Project index regenerated at {index_path} ({len(projects)} project(s)).",
                     )
                 ]
 

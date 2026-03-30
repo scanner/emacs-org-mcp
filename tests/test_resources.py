@@ -1,7 +1,11 @@
 """Tests for MCP resource listing and reading."""
 
 import asyncio
+import json
+import subprocess
+import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -13,6 +17,57 @@ from mcp_server.resources import (
     load_guide,
     read_resource,
 )
+
+
+class TestServerCapabilities:
+    """Tests that the MCP server advertises required capabilities to clients.
+
+    These tests catch the regression where ServerCapabilities() was constructed
+    without 'resources' or 'tools', causing MCP clients to never request them.
+    """
+
+    @pytest.fixture
+    def server_init_response(self) -> dict[str, object]:
+        """Run the real server process and perform the MCP initialize handshake."""
+        server_py = Path(__file__).parent.parent / "server.py"
+        init_request = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0.1"},
+                },
+            }
+        )
+        result = subprocess.run(
+            [sys.executable, str(server_py)],
+            input=init_request,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return cast(dict[str, object], json.loads(result.stdout.strip()))
+
+    @pytest.mark.parametrize("capability", ["resources", "tools"])
+    def test_server_advertises_capability(
+        self, server_init_response: dict, capability: str
+    ) -> None:
+        """
+        GIVEN the MCP server starts and receives an initialize request
+        WHEN it returns its capabilities
+        THEN 'resources' and 'tools' must both be present so clients know to
+             request them — omitting either silently breaks resource/tool access
+        """
+        capabilities = server_init_response["result"]["capabilities"]
+        assert capability in capabilities, (
+            f"ServerCapabilities() is missing '{capability}' — "
+            f"MCP clients will not request {capability}. "
+            f"Add {capability}={capability.capitalize()}Capability() to the "
+            f"ServerCapabilities(...) call in server.py."
+        )
 
 
 class TestLoadGuide:
