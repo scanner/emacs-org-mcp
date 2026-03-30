@@ -40,6 +40,7 @@ Additional information.
 - `:CUSTOM_ID:` — Required. Use `task-<ticket-id>` format (e.g., `task-gh-123`)
 - `:ID:` — Auto-generated UUID if omitted
 - `:CREATED:`, `:MODIFIED:`, `:CLOSED:` — Auto-managed timestamps
+- `:PROJECT:` — Optional. Links task to a project (value: project CUSTOM_ID, e.g., `project-booklore`)
 
 ## Finding Tasks
 
