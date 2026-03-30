@@ -9,7 +9,17 @@ from pathlib import Path
 import pytest
 
 # project imports
-import server
+from mcp_server.projects import (
+    create_project,
+    get_project,
+    link_task_to_project,
+    list_projects,
+    parse_project_file,
+    regenerate_project_index,
+    replace_project_section,
+    search_projects,
+    update_project,
+)
 from tests.conftest import ProjectFilesInfo
 
 
@@ -29,9 +39,7 @@ class TestParseProjectFile:
         THEN:  all fields and sections are correctly extracted
         """
         projects_dir = sample_project_files["projects_dir"]
-        project = server.parse_project_file(
-            projects_dir / "booklore.org"
-        )
+        project = parse_project_file(projects_dir / "booklore.org")
 
         assert project.title == "Booklore: Local Fiction RAG Platform"
         assert project.slug == "booklore"
@@ -48,18 +56,14 @@ class TestParseProjectFile:
 
     ####################################################################
     #
-    def test_parse_nonexistent_file(
-        self, temp_org_dir: Path
-    ) -> None:
+    def test_parse_nonexistent_file(self, temp_org_dir: Path) -> None:
         """
         GIVEN: a path to a non-existent file
         WHEN:  parse_project_file is called
         THEN:  FileNotFoundError is raised
         """
         with pytest.raises(FileNotFoundError):
-            server.parse_project_file(
-                temp_org_dir / "projects" / "nope.org"
-            )
+            parse_project_file(temp_org_dir / "projects" / "nope.org")
 
     ####################################################################
     #
@@ -80,9 +84,7 @@ class TestParseProjectFile:
         )
         (projects_dir / "my-project.org").write_text(content)
 
-        project = server.parse_project_file(
-            projects_dir / "my-project.org"
-        )
+        project = parse_project_file(projects_dir / "my-project.org")
         assert project.slug == "my-project"
 
 
@@ -114,7 +116,7 @@ class TestListProjects:
         WHEN:  list_projects is called with an optional status filter
         THEN:  the correct number of projects is returned
         """
-        projects = server.list_projects(status=status)
+        projects = list_projects(status=status)
         assert len(projects) == expected_count
         # When unfiltered, results should be sorted by title
         if status is None:
@@ -136,21 +138,19 @@ class TestListProjects:
             "* Projects Index\nAuto-generated.\n"
         )
 
-        projects = server.list_projects()
+        projects = list_projects()
         slugs = [p.slug for p in projects]
         assert "index" not in slugs
 
     ####################################################################
     #
-    def test_list_empty_directory(
-        self, empty_projects_dir: Path
-    ) -> None:
+    def test_list_empty_directory(self, empty_projects_dir: Path) -> None:
         """
         GIVEN: an empty projects directory
         WHEN:  list_projects is called
         THEN:  an empty list is returned
         """
-        assert server.list_projects() == []
+        assert list_projects() == []
 
 
 ########################################################################
@@ -179,7 +179,7 @@ class TestGetProject:
         WHEN:  get_project is called with slug, CUSTOM_ID, or title
         THEN:  the correct project is returned
         """
-        project = server.get_project(identifier)
+        project = get_project(identifier)
         assert project.slug == "booklore"
 
     ####################################################################
@@ -193,7 +193,7 @@ class TestGetProject:
         THEN:  ValueError is raised
         """
         with pytest.raises(ValueError, match="No project found"):
-            server.get_project("nonexistent-project")
+            get_project("nonexistent-project")
 
 
 ########################################################################
@@ -219,12 +219,10 @@ class TestCreateProject:
             ":END:\n\n"
             "** Description\nTesting auto-fill.\n"
         )
-        slug, content = server.create_project(entry)
+        slug, content = create_project(entry)
 
         assert slug == "auto-fill"
-        project = server.parse_project_file(
-            empty_projects_dir / "auto-fill.org"
-        )
+        project = parse_project_file(empty_projects_dir / "auto-fill.org")
         assert len(project.id) == 36  # UUID
         assert project.created  # Non-empty
         assert project.modified  # Non-empty
@@ -248,7 +246,7 @@ class TestCreateProject:
             ":END:\n"
         )
         with pytest.raises(ValueError, match="already exists"):
-            server.create_project(entry)
+            create_project(entry)
 
     ####################################################################
     #
@@ -267,7 +265,7 @@ class TestCreateProject:
             ":END:\n\n"
             "** Description\nTesting index generation.\n"
         )
-        server.create_project(entry)
+        create_project(entry)
 
         index_path = empty_projects_dir / "index.org"
         assert index_path.exists()
@@ -290,18 +288,20 @@ class TestUpdateProject:
         THEN:  that section changes, others are preserved,
                and MODIFIED timestamp is updated
         """
-        original = server.get_project("booklore")
+        original = get_project("booklore")
 
-        server.update_project(
+        update_project(
             identifier="booklore",
             section="Description",
             content="Updated description for Booklore.",
         )
 
-        updated = server.get_project("booklore")
+        updated = get_project("booklore")
         assert "Updated description" in updated.description
         assert "Goals" in updated.sections
-        assert updated.sections.get("Notes", "") == original.sections.get("Notes", "")
+        assert updated.sections.get("Notes", "") == original.sections.get(
+            "Notes", ""
+        )
         assert updated.modified != original.modified
 
     ####################################################################
@@ -314,12 +314,12 @@ class TestUpdateProject:
         WHEN:  update_project is called with a STATUS change
         THEN:  the property is updated in the file
         """
-        server.update_project(
+        update_project(
             identifier="booklore",
             properties={"STATUS": "on-hold"},
         )
 
-        project = server.get_project("booklore")
+        project = get_project("booklore")
         assert project.status == "on-hold"
 
     ####################################################################
@@ -332,13 +332,13 @@ class TestUpdateProject:
         WHEN:  update_project adds a Design section
         THEN:  the section is appended to the file
         """
-        server.update_project(
+        update_project(
             identifier="booklore",
             section="Design",
             content="New design notes here.",
         )
 
-        project = server.get_project("booklore")
+        project = get_project("booklore")
         assert "design notes" in project.sections["Design"]
 
     ####################################################################
@@ -351,12 +351,12 @@ class TestUpdateProject:
         WHEN:  update_project is called with a new headline
         THEN:  the title is changed
         """
-        server.update_project(
+        update_project(
             identifier="booklore",
             headline="Booklore: Fiction Search Engine",
         )
 
-        project = server.get_project("booklore")
+        project = get_project("booklore")
         assert project.title == "Booklore: Fiction Search Engine"
 
     ####################################################################
@@ -380,9 +380,7 @@ class TestUpdateProject:
         THEN:  ValueError is raised with appropriate message
         """
         with pytest.raises(ValueError, match=match):
-            server.update_project(
-                identifier="booklore", **kwargs
-            )
+            update_project(identifier="booklore", **kwargs)
 
 
 ########################################################################
@@ -416,7 +414,7 @@ class TestReplaceProjectSection:
             "** Notes\nOld notes.\n"
         )
 
-        result = server.replace_project_section(
+        result = replace_project_section(
             file_content, section_name, new_content
         )
         assert new_content in result
@@ -435,7 +433,7 @@ class TestReplaceProjectSection:
             "** Description\nSome desc.\n"
         )
 
-        result = server.replace_project_section(
+        result = replace_project_section(
             file_content, "Design", "Architecture notes."
         )
         assert "** Design" in result
@@ -468,7 +466,7 @@ class TestSearchProjects:
         WHEN:  search_projects is called
         THEN:  the correct project is found (case-insensitive)
         """
-        results = server.search_projects(query)
+        results = search_projects(query)
         assert len(results) == 1
         assert results[0].slug == expected_slug
 
@@ -482,7 +480,7 @@ class TestSearchProjects:
         WHEN:  search_projects is called
         THEN:  an empty list is returned
         """
-        assert server.search_projects("xyzzy-nonexistent") == []
+        assert search_projects("xyzzy-nonexistent") == []
 
 
 ########################################################################
@@ -500,11 +498,9 @@ class TestRegenerateProjectIndex:
         WHEN:  regenerate_project_index is called
         THEN:  index.org groups them by status with org-mode links
         """
-        server.regenerate_project_index()
+        regenerate_project_index()
 
-        index_path = (
-            sample_project_files["projects_dir"] / "index.org"
-        )
+        index_path = sample_project_files["projects_dir"] / "index.org"
         content = index_path.read_text()
 
         assert "** Active" in content
@@ -515,15 +511,13 @@ class TestRegenerateProjectIndex:
 
     ####################################################################
     #
-    def test_index_empty_directory(
-        self, empty_projects_dir: Path
-    ) -> None:
+    def test_index_empty_directory(self, empty_projects_dir: Path) -> None:
         """
         GIVEN: no project files exist
         WHEN:  regenerate_project_index is called
         THEN:  index.org is created with just the header
         """
-        server.regenerate_project_index()
+        regenerate_project_index()
 
         index_path = empty_projects_dir / "index.org"
         assert index_path.exists()
@@ -546,9 +540,9 @@ class TestLinkTaskToProject:
         THEN:  the task link appears in Related Tasks section
         """
         task_link = "- [[file:~/org/tasks.org::#task-gh-99][GH-99 Test task]]"
-        server.link_task_to_project("booklore", task_link)
+        link_task_to_project("booklore", task_link)
 
-        project = server.get_project("booklore")
+        project = get_project("booklore")
         assert "GH-99" in project.sections["Related Tasks"]
 
     ####################################################################
@@ -562,9 +556,9 @@ class TestLinkTaskToProject:
         THEN:  the section is created with the link
         """
         task_link = "- [[file:~/org/tasks.org::#task-gh-55][GH-55 New task]]"
-        server.link_task_to_project("email-migration", task_link)
+        link_task_to_project("email-migration", task_link)
 
-        project = server.get_project("email-migration")
+        project = get_project("email-migration")
         assert "GH-55" in project.sections["Related Tasks"]
 
 
@@ -583,14 +577,12 @@ class TestProjectToOrg:
         WHEN:  to_org() is called and re-parsed
         THEN:  the key fields survive the roundtrip
         """
-        original = server.get_project("booklore")
+        original = get_project("booklore")
         org_text = original.to_org()
 
-        temp_path = (
-            sample_project_files["projects_dir"] / "_roundtrip.org"
-        )
+        temp_path = sample_project_files["projects_dir"] / "_roundtrip.org"
         temp_path.write_text(org_text)
-        reparsed = server.parse_project_file(temp_path)
+        reparsed = parse_project_file(temp_path)
 
         assert reparsed.title == original.title
         assert reparsed.custom_id == original.custom_id

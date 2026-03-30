@@ -10,7 +10,7 @@ from typing import TypedDict
 import pytest
 from pytest_mock import MockerFixture
 
-import server
+from mcp_server.config import Config, global_state
 
 # =============================================================================
 # Type Definitions
@@ -257,32 +257,32 @@ def make_journal_file(entries: list[str], file_date: date) -> str:
 
 
 @pytest.fixture
-def config_factory(mocker: MockerFixture) -> Callable[[server.Config], None]:
+def config_factory(mocker: MockerFixture) -> Callable[[Config], None]:
     """
     Factory fixture that returns a callable to configure server with custom Config.
 
     Usage:
         def test_something(config_factory):
-            config_factory(server.Config(
+            config_factory(Config(
                 org_dir=Path("/tmp/test"),
                 ediff_approval=True
             ))
-            # Now server.global_state.config is set for this test
+            # Now global_state.config is set for this test
 
     Returns:
         Callable that accepts a Config object and patches global_state.config
     """
 
-    def _configure(config: server.Config) -> None:
+    def _configure(config: Config) -> None:
         """Set the global_state.config for this test."""
-        mocker.patch.object(server.global_state, "config", config)
+        mocker.patch.object(global_state, "config", config)
 
     return _configure
 
 
 @pytest.fixture
 def temp_org_dir(
-    tmp_path: Path, config_factory: Callable[[server.Config], None]
+    tmp_path: Path, config_factory: Callable[[Config], None]
 ) -> Path:
     """
     Create a temporary org directory structure and configure server to use it.
@@ -297,7 +297,7 @@ def temp_org_dir(
 
     # Configure server to use this temp directory (ediff disabled for tests)
     config_factory(
-        server.Config(
+        Config(
             org_dir=tmp_path,
             journal_dir=journal_dir,
             projects_dir=projects_dir,

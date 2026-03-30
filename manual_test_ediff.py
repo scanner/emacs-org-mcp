@@ -9,7 +9,7 @@ Usage:
 import logging
 import os
 
-from server import ensure_elisp_loaded, request_ediff_approval
+from mcp_server.utils import ensure_elisp_loaded, request_ediff_approval
 
 # Set up logging to see error details
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")

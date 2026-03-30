@@ -14,7 +14,13 @@ from unittest.mock import MagicMock
 import pytest
 from pytest_mock import MockerFixture
 
-import server
+from mcp_server.config import Config, global_state
+from mcp_server.utils import (
+    ensure_elisp_loaded,
+    get_emacsclient_path,
+    is_ediff_approval_enabled,
+    request_ediff_approval,
+)
 
 ###############################################################################
 # Fixtures
@@ -24,9 +30,9 @@ import server
 @pytest.fixture(autouse=True)
 def reset_elisp_loaded():
     """Reset the global _elisp_loaded state before each test."""
-    server.global_state.elisp_loaded = False
+    global_state.elisp_loaded = False
     yield
-    server.global_state.elisp_loaded = False
+    global_state.elisp_loaded = False
 
 
 ###############################################################################
@@ -56,7 +62,7 @@ class TestGetEmacsclientPath:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
         config_path_exists: bool,
         which_return: str | None,
         expected_type: str,
@@ -69,15 +75,15 @@ class TestGetEmacsclientPath:
         if config_path_exists:
             fake_client = tmp_path / "my_emacsclient"
             fake_client.write_text("fake")
-            config_factory(server.Config(emacsclient_path=fake_client))
+            config_factory(Config(emacsclient_path=fake_client))
             expected: str | None = str(fake_client)
         else:
             fake_path = tmp_path / "nonexistent"
-            config_factory(server.Config(emacsclient_path=fake_path))
+            config_factory(Config(emacsclient_path=fake_path))
             mocker.patch("shutil.which", return_value=which_return)
             expected = which_return
 
-        result = server.get_emacsclient_path()
+        result = get_emacsclient_path()
 
         assert result == expected
 
@@ -109,7 +115,7 @@ class TestIsEdiffApprovalEnabled:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
         ediff_approval: bool,
         client_exists: bool,
         expected: bool,
@@ -123,20 +129,20 @@ class TestIsEdiffApprovalEnabled:
             fake_client = tmp_path / "emacsclient"
             fake_client.write_text("fake")
             config_factory(
-                server.Config(
+                Config(
                     ediff_approval=ediff_approval, emacsclient_path=fake_client
                 )
             )
         else:
             fake_path = tmp_path / "nonexistent"
             config_factory(
-                server.Config(
+                Config(
                     ediff_approval=ediff_approval, emacsclient_path=fake_path
                 )
             )
             mocker.patch("shutil.which", return_value=None)
 
-        result = server.is_ediff_approval_enabled()
+        result = is_ediff_approval_enabled()
 
         assert result is expected
 
@@ -153,7 +159,7 @@ class TestEnsureElispLoaded:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: elisp file exists and has not been loaded
@@ -162,7 +168,7 @@ class TestEnsureElispLoaded:
         """
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
-        config_factory(server.Config(emacsclient_path=fake_client))
+        config_factory(Config(emacsclient_path=fake_client))
 
         # Mock the elisp file existence check
         elisp_file = tmp_path / "emacs_ediff.el"
@@ -175,16 +181,16 @@ class TestEnsureElispLoaded:
             "subprocess.run", return_value=MagicMock(returncode=0)
         )
 
-        server.ensure_elisp_loaded()
+        ensure_elisp_loaded()
 
         assert mock_run.called
-        assert server.global_state.elisp_loaded is True
+        assert global_state.elisp_loaded is True
 
     def test_skips_loading_on_subsequent_calls(
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: elisp has already been loaded
@@ -193,12 +199,12 @@ class TestEnsureElispLoaded:
         """
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
-        config_factory(server.Config(emacsclient_path=fake_client))
+        config_factory(Config(emacsclient_path=fake_client))
 
-        server.global_state.elisp_loaded = True
+        global_state.elisp_loaded = True
         mock_run = mocker.patch("subprocess.run")
 
-        server.ensure_elisp_loaded()
+        ensure_elisp_loaded()
 
         mock_run.assert_not_called()
 
@@ -206,7 +212,7 @@ class TestEnsureElispLoaded:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: emacsclient is not available
@@ -215,17 +221,17 @@ class TestEnsureElispLoaded:
         """
         fake_path = tmp_path / "nonexistent"
         mocker.patch("shutil.which", return_value=None)
-        config_factory(server.Config(emacsclient_path=fake_path))
+        config_factory(Config(emacsclient_path=fake_path))
 
-        server.ensure_elisp_loaded()
+        ensure_elisp_loaded()
 
-        assert server.global_state.elisp_loaded is False
+        assert global_state.elisp_loaded is False
 
     def test_handles_subprocess_error(
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: emacsclient execution fails
@@ -234,7 +240,7 @@ class TestEnsureElispLoaded:
         """
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
-        config_factory(server.Config(emacsclient_path=fake_client))
+        config_factory(Config(emacsclient_path=fake_client))
 
         # Mock elisp file
         elisp_file = tmp_path / "emacs_ediff.el"
@@ -248,9 +254,9 @@ class TestEnsureElispLoaded:
             side_effect=subprocess.CalledProcessError(1, "cmd"),
         )
 
-        server.ensure_elisp_loaded()
+        ensure_elisp_loaded()
 
-        assert server.global_state.elisp_loaded is False
+        assert global_state.elisp_loaded is False
 
 
 ###############################################################################
@@ -262,19 +268,19 @@ class TestRequestEdiffApproval:
     """Tests for request_ediff_approval function."""
 
     def test_auto_approves_when_disabled(
-        self, config_factory: Callable[[server.Config], None]
+        self, config_factory: Callable[[Config], None]
     ):
         """
         GIVEN: ediff approval is disabled
         WHEN: request_ediff_approval() is called
         THEN: Returns (True, new_content) immediately
         """
-        config_factory(server.Config(ediff_approval=False))
+        config_factory(Config(ediff_approval=False))
 
         old_content = "old task"
         new_content = "new task"
 
-        approved, final_content = server.request_ediff_approval(
+        approved, final_content = request_ediff_approval(
             old_content, new_content, "test-task"
         )
 
@@ -285,7 +291,7 @@ class TestRequestEdiffApproval:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: ediff enabled and user approves
@@ -300,7 +306,7 @@ class TestRequestEdiffApproval:
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
         config_factory(
-            server.Config(emacsclient_path=fake_client, ediff_approval=True)
+            Config(emacsclient_path=fake_client, ediff_approval=True)
         )
 
         mock_run = mocker.patch(
@@ -311,9 +317,7 @@ class TestRequestEdiffApproval:
         old_content = "old task"
         new_content = "new task"
 
-        approved, _ = server.request_ediff_approval(
-            old_content, new_content, "gh-127"
-        )
+        approved, _ = request_ediff_approval(old_content, new_content, "gh-127")
 
         assert approved is True
         assert mock_run.called
@@ -322,7 +326,7 @@ class TestRequestEdiffApproval:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: ediff enabled and user rejects
@@ -332,7 +336,7 @@ class TestRequestEdiffApproval:
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
         config_factory(
-            server.Config(emacsclient_path=fake_client, ediff_approval=True)
+            Config(emacsclient_path=fake_client, ediff_approval=True)
         )
 
         mocker.patch(
@@ -343,7 +347,7 @@ class TestRequestEdiffApproval:
         old_content = "old task"
         new_content = "new task"
 
-        approved, final_content = server.request_ediff_approval(
+        approved, final_content = request_ediff_approval(
             old_content, new_content, "gh-127"
         )
 
@@ -354,7 +358,7 @@ class TestRequestEdiffApproval:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: user edits content before approving
@@ -364,7 +368,7 @@ class TestRequestEdiffApproval:
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
         config_factory(
-            server.Config(ediff_approval=True, emacsclient_path=fake_client)
+            Config(ediff_approval=True, emacsclient_path=fake_client)
         )
 
         mocker.patch(
@@ -385,7 +389,7 @@ class TestRequestEdiffApproval:
         old_content = "** TODO Old task"
         new_content = "** TODO New task"
 
-        approved, final_content = server.request_ediff_approval(
+        approved, final_content = request_ediff_approval(
             old_content, new_content, "gh-127"
         )
 
@@ -396,7 +400,7 @@ class TestRequestEdiffApproval:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: subprocess times out
@@ -406,7 +410,7 @@ class TestRequestEdiffApproval:
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
         config_factory(
-            server.Config(ediff_approval=True, emacsclient_path=fake_client)
+            Config(ediff_approval=True, emacsclient_path=fake_client)
         )
 
         mocker.patch(
@@ -417,7 +421,7 @@ class TestRequestEdiffApproval:
         old_content = "old task"
         new_content = "new task"
 
-        approved, final_content = server.request_ediff_approval(
+        approved, final_content = request_ediff_approval(
             old_content, new_content, "gh-127"
         )
 
@@ -428,7 +432,7 @@ class TestRequestEdiffApproval:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: subprocess fails with error
@@ -438,7 +442,7 @@ class TestRequestEdiffApproval:
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
         config_factory(
-            server.Config(ediff_approval=True, emacsclient_path=fake_client)
+            Config(ediff_approval=True, emacsclient_path=fake_client)
         )
 
         mocker.patch(
@@ -449,7 +453,7 @@ class TestRequestEdiffApproval:
         old_content = "old task"
         new_content = "new task"
 
-        approved, final_content = server.request_ediff_approval(
+        approved, final_content = request_ediff_approval(
             old_content, new_content, "gh-127"
         )
 
@@ -460,7 +464,7 @@ class TestRequestEdiffApproval:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: context_name is provided
@@ -470,7 +474,7 @@ class TestRequestEdiffApproval:
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
         config_factory(
-            server.Config(ediff_approval=True, emacsclient_path=fake_client)
+            Config(ediff_approval=True, emacsclient_path=fake_client)
         )
 
         mock_run = mocker.patch(
@@ -481,7 +485,7 @@ class TestRequestEdiffApproval:
         old_content = "old"
         new_content = "new"
 
-        server.request_ediff_approval(old_content, new_content, "gh-127")
+        request_ediff_approval(old_content, new_content, "gh-127")
 
         # Check that emacsclient was called with paths containing context
         #
@@ -494,7 +498,7 @@ class TestRequestEdiffApproval:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: ediff approval is requested
@@ -504,7 +508,7 @@ class TestRequestEdiffApproval:
         fake_client = tmp_path / "emacsclient"
         fake_client.write_text("fake")
         config_factory(
-            server.Config(ediff_approval=True, emacsclient_path=fake_client)
+            Config(ediff_approval=True, emacsclient_path=fake_client)
         )
 
         mock_tempdir = mocker.patch("tempfile.TemporaryDirectory")
@@ -513,7 +517,7 @@ class TestRequestEdiffApproval:
             return_value=MagicMock(stdout='"approved"', returncode=0),
         )
 
-        server.request_ediff_approval("old", "new", "test")
+        request_ediff_approval("old", "new", "test")
 
         mock_tempdir.assert_called_once_with(prefix="emacs-org-mcp-ediff-")
 
@@ -521,7 +525,7 @@ class TestRequestEdiffApproval:
         self,
         tmp_path: Path,
         mocker: MockerFixture,
-        config_factory: Callable[[server.Config], None],
+        config_factory: Callable[[Config], None],
     ):
         """
         GIVEN: emacsclient is not found
@@ -529,15 +533,13 @@ class TestRequestEdiffApproval:
         THEN: Falls back to auto-approve
         """
         fake_path = tmp_path / "nonexistent"
-        config_factory(
-            server.Config(ediff_approval=True, emacsclient_path=fake_path)
-        )
+        config_factory(Config(ediff_approval=True, emacsclient_path=fake_path))
         mocker.patch("shutil.which", return_value=None)
 
         old_content = "old"
         new_content = "new"
 
-        approved, final_content = server.request_ediff_approval(
+        approved, final_content = request_ediff_approval(
             old_content, new_content, "test"
         )
 

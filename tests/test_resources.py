@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-import server
+from mcp_server.resources import (
+    get_journal_format_guide,
+    get_project_format_guide,
+    get_task_format_guide,
+    list_resources,
+    load_guide,
+    read_resource,
+)
 
 
 class TestLoadGuide:
@@ -27,7 +34,7 @@ class TestLoadGuide:
         """
         guides_dir = Path(__file__).parent.parent / "resources" / "guides"
         expected = (guides_dir / filename).read_text()
-        actual = server.load_guide(filename)
+        actual = load_guide(filename)
         assert actual == expected
 
     def test_load_nonexistent_guide(self) -> None:
@@ -37,7 +44,7 @@ class TestLoadGuide:
         Then it should raise FileNotFoundError
         """
         with pytest.raises(FileNotFoundError):
-            server.load_guide("nonexistent.md")
+            load_guide("nonexistent.md")
 
 
 class TestResourceContentGenerators:
@@ -46,9 +53,9 @@ class TestResourceContentGenerators:
     @pytest.mark.parametrize(
         "func,filename",
         [
-            (server.get_task_format_guide, "task-format.md"),
-            (server.get_journal_format_guide, "journal-format.md"),
-            (server.get_project_format_guide, "project-format.md"),
+            (get_task_format_guide, "task-format.md"),
+            (get_journal_format_guide, "journal-format.md"),
+            (get_project_format_guide, "project-format.md"),
         ],
     )
     def test_guide_generator_returns_file_content(
@@ -74,7 +81,7 @@ class TestListResources:
         When it returns the list of available resources
         Then it should include both guide resources
         """
-        resources = asyncio.run(server.list_resources())
+        resources = asyncio.run(list_resources())
 
         guide_uris = [
             "emacs-org://guide/task-format",
@@ -108,7 +115,7 @@ class TestReadResource:
         """
         guides_dir = Path(__file__).parent.parent / "resources" / "guides"
         expected = (guides_dir / filename).read_text()
-        result = asyncio.run(server.read_resource(uri))
+        result = asyncio.run(read_resource(uri))
 
         # read_resource now returns list[ReadResourceContents]
         assert isinstance(result, list)
@@ -123,7 +130,7 @@ class TestReadResource:
         Then it should raise ValueError
         """
         with pytest.raises(ValueError, match="Unknown resource"):
-            asyncio.run(server.read_resource("emacs-org://guide/nonexistent"))
+            asyncio.run(read_resource("emacs-org://guide/nonexistent"))
 
     def test_all_listed_guides_are_readable(self) -> None:
         """
@@ -132,7 +139,7 @@ class TestReadResource:
         Then all should successfully return the file contents
         """
         guides_dir = Path(__file__).parent.parent / "resources" / "guides"
-        resources = asyncio.run(server.list_resources())
+        resources = asyncio.run(list_resources())
 
         guide_resources = [
             r for r in resources if str(r.uri).startswith("emacs-org://guide/")
@@ -148,7 +155,7 @@ class TestReadResource:
         for resource in guide_resources:
             uri_str = str(resource.uri)
             expected = (guides_dir / uri_to_file[uri_str]).read_text()
-            result = asyncio.run(server.read_resource(uri_str))
+            result = asyncio.run(read_resource(uri_str))
 
             # read_resource now returns list[ReadResourceContents]
             assert isinstance(result, list)

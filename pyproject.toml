@@ -8,6 +8,7 @@ dependencies = [
     "docopt>=0.6.2",
     "mcp>=1.25.0",
     "orgmunge>=0.3.1",
+    "pydantic>=2.12.5",
     "rich>=14.2.0",
 ]
 
