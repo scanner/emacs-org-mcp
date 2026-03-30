@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pytest_mock import MockerFixture
 
-import server
+from mcp_server.config import Config, load_config
 
 
 class TestLoadConfig:
@@ -18,10 +18,11 @@ class TestLoadConfig:
         When load_config is called
         Then all configuration values should use their defaults
         """
-        config = server.load_config({})
+        config = load_config({})
 
         assert config.org_dir == Path.home() / "org"
         assert config.journal_dir == Path.home() / "org" / "journal"
+        assert config.projects_dir == Path.home() / "org" / "projects"
         assert config.emacsclient_path == Path("/usr/local/bin/emacsclient")
         assert config.ediff_approval is True  # Default is now True
         assert config.active_section == "Tasks"
@@ -34,7 +35,7 @@ class TestLoadConfig:
         When accessing tasks_file property
         Then it should return org_dir / tasks.org
         """
-        config = server.Config(org_dir=Path("/custom/org"))
+        config = Config(org_dir=Path("/custom/org"))
 
         assert config.tasks_file == Path("/custom/org/tasks.org")
 
@@ -49,6 +50,7 @@ class TestLoadConfig:
             {
                 "ORG_DIR": "/my/org",
                 "JOURNAL_DIR": "/my/journal",
+                "PROJECTS_DIR": "/my/projects",
                 "EMACSCLIENT_PATH": "/usr/bin/emacsclient",
                 "EMACS_EDIFF_APPROVAL": "true",
                 "ACTIVE_SECTION": "Active Task List",
@@ -57,10 +59,11 @@ class TestLoadConfig:
             },
         )
 
-        config = server.load_config({})
+        config = load_config({})
 
         assert config.org_dir == Path("/my/org")
         assert config.journal_dir == Path("/my/journal")
+        assert config.projects_dir == Path("/my/projects")
         assert config.emacsclient_path == Path("/usr/bin/emacsclient")
         assert config.ediff_approval is True
         assert config.active_section == "Active Task List"
@@ -76,6 +79,7 @@ class TestLoadConfig:
         args: dict[str, str | bool | None] = {
             "--org-dir": "/cli/org",
             "--journal-dir": "/cli/journal",
+            "--projects-dir": "/cli/projects",
             "--emacsclient-path": "/opt/emacsclient",
             "--ediff-approval": True,
             "--active-section": "CLI Active",
@@ -83,10 +87,11 @@ class TestLoadConfig:
             "--high-level-section": "CLI High Level",
         }
 
-        config = server.load_config(args)
+        config = load_config(args)
 
         assert config.org_dir == Path("/cli/org")
         assert config.journal_dir == Path("/cli/journal")
+        assert config.projects_dir == Path("/cli/projects")
         assert config.emacsclient_path == Path("/opt/emacsclient")
         assert config.ediff_approval is True
         assert config.active_section == "CLI Active"
@@ -114,7 +119,7 @@ class TestLoadConfig:
             # active_section not in CLI, should use env value
         }
 
-        config = server.load_config(args)
+        config = load_config(args)
 
         assert config.org_dir == Path("/cli/org")  # CLI wins
         assert config.ediff_approval is True  # CLI wins
@@ -130,7 +135,7 @@ class TestLoadConfig:
         """
         for value in ["true", "True", "TRUE", "1", "yes", "Yes", "YES"]:
             mocker.patch.dict(os.environ, {"EMACS_EDIFF_APPROVAL": value})
-            config = server.load_config({})
+            config = load_config({})
             assert config.ediff_approval is True, (
                 f"Expected True for value: {value}"
             )
@@ -145,7 +150,7 @@ class TestLoadConfig:
         """
         for value in ["false", "False", "FALSE", "0", "no", "No", "NO", ""]:
             mocker.patch.dict(os.environ, {"EMACS_EDIFF_APPROVAL": value})
-            config = server.load_config({})
+            config = load_config({})
             assert config.ediff_approval is False, (
                 f"Expected False for value: {value}"
             )
@@ -164,7 +169,7 @@ class TestLoadConfig:
             },
         )
 
-        config = server.load_config({})
+        config = load_config({})
 
         assert config.org_dir == Path.home() / "my" / "org"
         assert config.journal_dir == Path.home() / "my" / "journal"
@@ -186,42 +191,44 @@ class TestLoadConfig:
             "--ediff-approval": True,  # Provided
         }
 
-        config = server.load_config(args)
+        config = load_config(args)
 
         assert config.org_dir == Path.home() / "org"  # Default
         assert config.active_section == "Env Section"  # Env
         assert config.ediff_approval is True  # CLI
 
-    def test_journal_dir_defaults_to_org_dir_when_org_dir_customized(
+    def test_subdirs_default_to_org_dir_when_org_dir_customized(
         self, mocker: MockerFixture
     ) -> None:
         """
-        Given org_dir is customized but journal_dir is not
+        Given org_dir is customized but journal_dir/projects_dir are not
         When load_config is called
-        Then journal_dir should default to org_dir/journal
+        Then both default to subdirectories of org_dir
         """
         # Test with environment variable
         mocker.patch.dict(os.environ, {"ORG_DIR": "/custom/org"})
-        config = server.load_config({})
+        config = load_config({})
         assert config.org_dir == Path("/custom/org")
         assert config.journal_dir == Path("/custom/org/journal")
+        assert config.projects_dir == Path("/custom/org/projects")
 
         # Test with CLI argument
         mocker.patch.dict(os.environ, {}, clear=True)
         args: dict[str, str | bool | None] = {
             "--org-dir": "/another/org",
         }
-        config = server.load_config(args)
+        config = load_config(args)
         assert config.org_dir == Path("/another/org")
         assert config.journal_dir == Path("/another/org/journal")
+        assert config.projects_dir == Path("/another/org/projects")
 
-    def test_journal_dir_not_overridden_when_explicitly_set(
+    def test_subdirs_not_overridden_when_explicitly_set(
         self, mocker: MockerFixture
     ) -> None:
         """
-        Given both org_dir and journal_dir are customized
+        Given both org_dir and journal_dir/projects_dir are customized
         When load_config is called
-        Then journal_dir should use the explicitly set value
+        Then explicitly set values are preserved
         """
         # Test with environment variables
         mocker.patch.dict(
@@ -229,21 +236,25 @@ class TestLoadConfig:
             {
                 "ORG_DIR": "/custom/org",
                 "JOURNAL_DIR": "/completely/different/journal",
+                "PROJECTS_DIR": "/completely/different/projects",
             },
         )
-        config = server.load_config({})
+        config = load_config({})
         assert config.org_dir == Path("/custom/org")
         assert config.journal_dir == Path("/completely/different/journal")
+        assert config.projects_dir == Path("/completely/different/projects")
 
         # Test with CLI arguments
         mocker.patch.dict(os.environ, {}, clear=True)
         args: dict[str, str | bool | None] = {
             "--org-dir": "/another/org",
             "--journal-dir": "/separate/journal",
+            "--projects-dir": "/separate/projects",
         }
-        config = server.load_config(args)
+        config = load_config(args)
         assert config.org_dir == Path("/another/org")
         assert config.journal_dir == Path("/separate/journal")
+        assert config.projects_dir == Path("/separate/projects")
 
     @pytest.mark.parametrize(
         "env_value,cli_arg,cli_value,expected,description",
@@ -313,7 +324,7 @@ class TestLoadConfig:
             args[cli_arg] = cli_value
 
         # Execute
-        config = server.load_config(args)
+        config = load_config(args)
 
         # Assert
         assert config.ediff_approval is expected, (

@@ -6,7 +6,9 @@ from pathlib import Path
 
 from orgmunge import Org
 
-import server
+from mcp_server.config import Config
+from mcp_server.journal import parse_journal_entries
+from mcp_server.tasks import find_section, get_org, list_tasks
 from tests.conftest import (
     make_journal_entry,
     make_journal_file,
@@ -61,28 +63,28 @@ class TestMakeTasksOrg:
     """Tests that make_tasks_org produces valid tasks.org structure."""
 
     def test_tasks_org_has_both_sections(
-        self, tmp_path: Path, config_factory: Callable[[server.Config], None]
+        self, tmp_path: Path, config_factory: Callable[[Config], None]
     ) -> None:
         """Test that generated tasks.org has Active and Completed sections."""
         tasks_file = tmp_path / "tasks.org"
-        config_factory(server.Config(org_dir=tmp_path))
+        config_factory(Config(org_dir=tmp_path))
 
         content = make_tasks_org()
         tasks_file.write_text(content)
 
-        org = server.get_org()
-        active = server.find_section(org, "Tasks")
-        completed = server.find_section(org, "Completed Tasks")
+        org = get_org()
+        active = find_section(org, "Tasks")
+        completed = find_section(org, "Completed Tasks")
 
         assert active is not None
         assert completed is not None
 
     def test_tasks_org_with_tasks_parseable(
-        self, tmp_path: Path, config_factory: Callable[[server.Config], None]
+        self, tmp_path: Path, config_factory: Callable[[Config], None]
     ) -> None:
         """Test that tasks.org with tasks can be parsed by server functions."""
         tasks_file = tmp_path / "tasks.org"
-        config_factory(server.Config(org_dir=tmp_path))
+        config_factory(Config(org_dir=tmp_path))
 
         task1 = make_task(headline="Task One", custom_id="task-one")
         task2 = make_task(
@@ -91,8 +93,8 @@ class TestMakeTasksOrg:
         content = make_tasks_org(active_tasks=[task1], completed_tasks=[task2])
         tasks_file.write_text(content)
 
-        active_tasks = server.list_tasks("Tasks")
-        completed_tasks = server.list_tasks("Completed Tasks")
+        active_tasks = list_tasks("Tasks")
+        completed_tasks = list_tasks("Completed Tasks")
 
         assert len(active_tasks) == 1
         assert active_tasks[0].custom_id == "task-one"
@@ -107,12 +109,12 @@ class TestMakeJournalEntry:
     """Tests that make_journal_entry produces valid journal entry format."""
 
     def test_entry_parseable_by_server(
-        self, tmp_path: Path, config_factory: Callable[[server.Config], None]
+        self, tmp_path: Path, config_factory: Callable[[Config], None]
     ) -> None:
         """Test that journal entry can be parsed by server's parse function."""
         journal_dir = tmp_path / "journal"
         journal_dir.mkdir()
-        config_factory(server.Config(org_dir=tmp_path, journal_dir=journal_dir))
+        config_factory(Config(org_dir=tmp_path, journal_dir=journal_dir))
 
         entry = make_journal_entry(
             time="14:30",
@@ -125,7 +127,7 @@ class TestMakeJournalEntry:
         journal_file = journal_dir / "20250115"
         journal_file.write_text(journal_content)
 
-        entries = server.parse_journal_entries(journal_file)
+        entries = parse_journal_entries(journal_file)
 
         assert len(entries) == 1
         assert entries[0].time == "14:30"
@@ -146,12 +148,12 @@ class TestMakeJournalFile:
         assert lines[0] == "* 2025-12-22"
 
     def test_journal_file_multiple_entries(
-        self, tmp_path: Path, config_factory: Callable[[server.Config], None]
+        self, tmp_path: Path, config_factory: Callable[[Config], None]
     ) -> None:
         """Test parsing journal file with multiple entries."""
         journal_dir = tmp_path / "journal"
         journal_dir.mkdir()
-        config_factory(server.Config(org_dir=tmp_path, journal_dir=journal_dir))
+        config_factory(Config(org_dir=tmp_path, journal_dir=journal_dir))
 
         entries = [
             make_journal_entry("09:00", "Morning standup"),
@@ -168,7 +170,7 @@ class TestMakeJournalFile:
         journal_file = journal_dir / "20250615"
         journal_file.write_text(content)
 
-        parsed = server.parse_journal_entries(journal_file)
+        parsed = parse_journal_entries(journal_file)
 
         assert len(parsed) == 3
         assert parsed[0].time == "09:00"

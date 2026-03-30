@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-import server
+from mcp_server.journal import (
+    create_journal_entry,
+    find_journal_entry,
+    get_journal_path,
+    parse_journal_entries,
+    search_journal,
+    update_journal_entry,
+)
 from tests.conftest import (
     JournalFilesInfo,
     make_journal_entry,
@@ -18,13 +25,13 @@ class TestGetJournalPath:
 
     def test_path_format(self, empty_journal_dir: Path) -> None:
         """Test that journal path uses YYYYMMDD format."""
-        path = server.get_journal_path(date(2025, 1, 15))
+        path = get_journal_path(date(2025, 1, 15))
 
         assert path.name == "20250115"
 
     def test_path_in_journal_dir(self, empty_journal_dir: Path) -> None:
         """Test that path is within the journal directory."""
-        path = server.get_journal_path(date(2025, 12, 22))
+        path = get_journal_path(date(2025, 12, 22))
 
         assert path.parent == empty_journal_dir
 
@@ -36,7 +43,7 @@ class TestGetJournalPath:
         org_file = empty_journal_dir / "20250615.org"
         org_file.write_text("* 2025-06-15\n\n** 10:00 Test entry\n- Content\n")
 
-        path = server.get_journal_path(target_date)
+        path = get_journal_path(target_date)
 
         assert path == org_file
         assert path.suffix == ".org"
@@ -51,7 +58,7 @@ class TestGetJournalPath:
         no_ext_file.write_text("* 2025-07-20\n\n** 09:00 No extension\n")
         org_file.write_text("* 2025-07-20\n\n** 09:00 With org extension\n")
 
-        path = server.get_journal_path(target_date)
+        path = get_journal_path(target_date)
 
         assert path == org_file
 
@@ -66,7 +73,7 @@ class TestGetJournalPath:
             "- Did something\n"
         )
 
-        entries = server.parse_journal_entries(org_file)
+        entries = parse_journal_entries(org_file)
 
         assert len(entries) == 1
         assert entries[0].time == "14:30"
@@ -83,7 +90,7 @@ class TestGetJournalPath:
 
         # Get path for a new date (file doesn't exist)
         new_date = date(2025, 9, 15)
-        path = server.get_journal_path(new_date)
+        path = get_journal_path(new_date)
 
         assert path.suffix == ".org"
         assert path.name == "20250915.org"
@@ -98,7 +105,7 @@ class TestGetJournalPath:
 
         # Get path for a new date (file doesn't exist)
         new_date = date(2025, 9, 15)
-        path = server.get_journal_path(new_date)
+        path = get_journal_path(new_date)
 
         assert path.suffix == ""
         assert path.name == "20250915"
@@ -111,9 +118,7 @@ class TestParseJournalEntries:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test parsing entries from a journal file."""
-        entries = server.parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
+        entries = parse_journal_entries(sample_journal_files["today_file"])
 
         assert len(entries) == sample_journal_files["today_entry_count"]
 
@@ -121,9 +126,7 @@ class TestParseJournalEntries:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test that parsed entries have correct fields."""
-        entries = server.parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
+        entries = parse_journal_entries(sample_journal_files["today_file"])
 
         # Check first entry
         entry = entries[0]
@@ -137,9 +140,7 @@ class TestParseJournalEntries:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test that tags are correctly parsed."""
-        entries = server.parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
+        entries = parse_journal_entries(sample_journal_files["today_file"])
 
         # Find the entry with daily_summary tag
         tagged_entries = [e for e in entries if "daily_summary" in e.tags]
@@ -148,7 +149,7 @@ class TestParseJournalEntries:
     def test_parse_nonexistent_file(self, empty_journal_dir: Path) -> None:
         """Test parsing a nonexistent file returns empty list."""
         nonexistent = empty_journal_dir / "19700101"
-        entries = server.parse_journal_entries(nonexistent)
+        entries = parse_journal_entries(nonexistent)
 
         assert entries == []
 
@@ -160,7 +161,7 @@ class TestCreateJournalEntry:
         """Test creating an entry when no journal file exists."""
         target_date = date(2025, 3, 15)
 
-        result = server.create_journal_entry(
+        result = create_journal_entry(
             target_date=target_date,
             time_str="10:00",
             headline="First entry of the day",
@@ -177,7 +178,7 @@ class TestCreateJournalEntry:
         assert journal_file.exists()
 
         # Verify entry can be parsed
-        entries = server.parse_journal_entries(journal_file)
+        entries = parse_journal_entries(journal_file)
         assert len(entries) == 1
         assert entries[0].time == "10:00"
         assert entries[0].headline == "First entry of the day"
@@ -188,16 +189,14 @@ class TestCreateJournalEntry:
         """Test creating an entry appends to existing file."""
         original_count = sample_journal_files["today_entry_count"]
 
-        server.create_journal_entry(
+        create_journal_entry(
             target_date=sample_journal_files["today"],
             time_str="20:00",
             headline="Evening update",
             content="- Late night work",
         )
 
-        entries = server.parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
+        entries = parse_journal_entries(sample_journal_files["today_file"])
         assert len(entries) == original_count + 1
 
         # New entry should be last
@@ -207,7 +206,7 @@ class TestCreateJournalEntry:
         """Test creating an entry with tags."""
         target_date = date(2025, 4, 1)
 
-        server.create_journal_entry(
+        create_journal_entry(
             target_date=target_date,
             time_str="17:00",
             headline="End of day",
@@ -216,7 +215,7 @@ class TestCreateJournalEntry:
         )
 
         journal_file = empty_journal_dir / "20250401"
-        entries = server.parse_journal_entries(journal_file)
+        entries = parse_journal_entries(journal_file)
 
         assert len(entries) == 1
         assert "daily_summary" in entries[0].tags
@@ -227,7 +226,7 @@ class TestCreateJournalEntry:
         """Test that new journal file has proper date header."""
         target_date = date(2025, 5, 20)
 
-        server.create_journal_entry(
+        create_journal_entry(
             target_date=target_date,
             time_str="09:00",
             headline="Test",
@@ -273,20 +272,20 @@ class TestFindJournalEntry:
         expected_in_headline: str,
     ) -> None:
         """Test finding entries by time alone or with headline disambiguation."""
-        entry = server.find_journal_entry(multi_entry_file, time_str, headline)
+        entry = find_journal_entry(multi_entry_file, time_str, headline)
         assert expected_in_headline in entry.headline
 
     def test_find_by_time_not_found(self, multi_entry_file: Path) -> None:
         """Test that finding a nonexistent time raises ValueError."""
         with pytest.raises(ValueError, match="No journal entry found"):
-            server.find_journal_entry(multi_entry_file, "23:59")
+            find_journal_entry(multi_entry_file, "23:59")
 
     def test_find_raises_on_ambiguous_time(
         self, multi_entry_file: Path
     ) -> None:
         """Test that ambiguous time without headline raises ValueError."""
         with pytest.raises(ValueError, match="Multiple entries"):
-            server.find_journal_entry(multi_entry_file, "14:30")
+            find_journal_entry(multi_entry_file, "14:30")
 
 
 class TestUpdateJournalEntry:
@@ -296,12 +295,10 @@ class TestUpdateJournalEntry:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test updating an entry's headline."""
-        entries = server.parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
+        entries = parse_journal_entries(sample_journal_files["today_file"])
         first_entry = entries[0]
 
-        result = server.update_journal_entry(
+        result = update_journal_entry(
             file_path=sample_journal_files["today_file"],
             time_str=first_entry.time,
             headline="Updated headline",
@@ -313,7 +310,7 @@ class TestUpdateJournalEntry:
         assert new_entry.headline == "Updated headline"
 
         # Verify the update
-        updated_entries = server.parse_journal_entries(
+        updated_entries = parse_journal_entries(
             sample_journal_files["today_file"]
         )
         assert updated_entries[0].headline == "Updated headline"
@@ -322,19 +319,17 @@ class TestUpdateJournalEntry:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test updating an entry's content."""
-        entries = server.parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
+        entries = parse_journal_entries(sample_journal_files["today_file"])
         first_entry = entries[0]
 
-        server.update_journal_entry(
+        update_journal_entry(
             file_path=sample_journal_files["today_file"],
             time_str=first_entry.time,
             headline=first_entry.headline,
             content="- New bullet point\n- Another new point",
         )
 
-        updated_entries = server.parse_journal_entries(
+        updated_entries = parse_journal_entries(
             sample_journal_files["today_file"]
         )
         assert "New bullet point" in updated_entries[0].content
@@ -343,12 +338,10 @@ class TestUpdateJournalEntry:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test updating an entry's tags."""
-        entries = server.parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
+        entries = parse_journal_entries(sample_journal_files["today_file"])
         first_entry = entries[0]
 
-        server.update_journal_entry(
+        update_journal_entry(
             file_path=sample_journal_files["today_file"],
             time_str=first_entry.time,
             headline=first_entry.headline,
@@ -356,7 +349,7 @@ class TestUpdateJournalEntry:
             tags=["new_tag", "another_tag"],
         )
 
-        updated_entries = server.parse_journal_entries(
+        updated_entries = parse_journal_entries(
             sample_journal_files["today_file"]
         )
         assert "new_tag" in updated_entries[0].tags
@@ -366,21 +359,21 @@ class TestUpdateJournalEntry:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test that updating one entry doesn't affect others."""
-        original_entries = server.parse_journal_entries(
+        original_entries = parse_journal_entries(
             sample_journal_files["today_file"]
         )
         original_count = len(original_entries)
         first_entry = original_entries[0]
         second_entry = original_entries[1]
 
-        server.update_journal_entry(
+        update_journal_entry(
             file_path=sample_journal_files["today_file"],
             time_str=first_entry.time,
             headline="Modified first entry",
             content="- Modified content",
         )
 
-        updated_entries = server.parse_journal_entries(
+        updated_entries = parse_journal_entries(
             sample_journal_files["today_file"]
         )
 
@@ -399,13 +392,13 @@ class TestUpdateJournalEntry:
         Bug: to_org() strips trailing whitespace, but the old entry range
         includes trailing blank lines. The splice eats the separator.
         """
-        original_entries = server.parse_journal_entries(
+        original_entries = parse_journal_entries(
             sample_journal_files["today_file"]
         )
         first_entry = original_entries[0]
         second_entry = original_entries[1]
 
-        server.update_journal_entry(
+        update_journal_entry(
             file_path=sample_journal_files["today_file"],
             time_str=first_entry.time,
             headline="Updated first entry",
@@ -433,7 +426,7 @@ class TestUpdateJournalEntry:
             "* 2025-08-10\n\n** 14:30 Original headline\n- Original content\n"
         )
 
-        _, new_entry, _ = server.update_journal_entry(
+        _, new_entry, _ = update_journal_entry(
             file_path=journal_file,
             time_str="14:30",
             headline="Updated headline",
@@ -487,7 +480,7 @@ class TestUpdateJournalEntry:
             "- Content B\n"
         )
 
-        server.update_journal_entry(
+        update_journal_entry(
             file_path=journal_file,
             time_str=new_time,
             headline=new_headline,
@@ -496,7 +489,7 @@ class TestUpdateJournalEntry:
             existing_headline=existing_headline,
         )
 
-        updated_entries = server.parse_journal_entries(journal_file)
+        updated_entries = parse_journal_entries(journal_file)
         for entry, expected in zip(
             updated_entries, expected_headlines, strict=False
         ):
@@ -510,7 +503,7 @@ class TestSearchJournal:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test searching journal entries by headline."""
-        results = server.search_journal("JIRA-1234")
+        results = search_journal("JIRA-1234")
 
         assert len(results) >= 1
         assert any("JIRA-1234" in e.headline for e in results)
@@ -519,7 +512,7 @@ class TestSearchJournal:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test searching journal entries by content."""
-        results = server.search_journal("root cause")
+        results = search_journal("root cause")
 
         assert len(results) >= 1
         assert any("root cause" in e.content.lower() for e in results)
@@ -528,8 +521,8 @@ class TestSearchJournal:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test that search is case-insensitive."""
-        results_lower = server.search_journal("meeting")
-        results_upper = server.search_journal("MEETING")
+        results_lower = search_journal("meeting")
+        results_upper = search_journal("MEETING")
 
         assert len(results_lower) == len(results_upper)
 
@@ -537,7 +530,7 @@ class TestSearchJournal:
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
         """Test search with no matching results."""
-        results = server.search_journal("xyzzy-not-found-anywhere")
+        results = search_journal("xyzzy-not-found-anywhere")
 
         assert len(results) == 0
 
@@ -559,10 +552,10 @@ class TestSearchJournal:
         old_file.write_text(make_journal_file([old_entry], old_date))
 
         # Search with 5 days back - should only find today's
-        results_5_days = server.search_journal("unique marker", days_back=5)
+        results_5_days = search_journal("unique marker", days_back=5)
         assert len(results_5_days) == 1
         assert "Today" in results_5_days[0].headline
 
         # Search with 15 days back - should find both
-        results_15_days = server.search_journal("unique marker", days_back=15)
+        results_15_days = search_journal("unique marker", days_back=15)
         assert len(results_15_days) == 2

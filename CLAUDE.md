@@ -2,14 +2,15 @@
 
 ## Project Overview
 
-This is an MCP (Model Context Protocol) server that enables Claude (via Claude Desktop, Claude Code, or Claude CLI) to manage Emacs org-mode task lists and journal entries without resorting to shell commands or ad-hoc Python scripts.
+This is an MCP (Model Context Protocol) server that enables Claude (via Claude Desktop, Claude Code, or Claude CLI) to manage Emacs org-mode task lists, journal entries, and projects without resorting to shell commands or ad-hoc Python scripts.
 
 ### Goals
 
 1. Provide a clean, well-defined interface for manipulating `~/org/tasks.org`
 2. Provide a clean interface for managing `~/org/journal/` entries
-3. Use `orgmunge` for robust org-mode AST manipulation (tasks)
-4. Follow the task and journal formats defined in `~/.claude/CLAUDE.md`
+3. Provide project management via `~/org/projects/` individual project files
+4. Use `orgmunge` for robust org-mode AST manipulation (tasks)
+5. Follow the task, journal, and project formats defined in `~/.claude/CLAUDE.md`
 
 ### What This Replaces
 
@@ -22,6 +23,7 @@ Previously, Claude would use `cat` to read org files and write Python scripts to
 - **MCP SDK** (`mcp` package) for the Model Context Protocol server
 - **orgmunge** for parsing and manipulating org-mode files (tasks)
 - Manual parsing for journal files (simpler flat structure)
+- Manual parsing for project files (one file per project)
 
 ## Running and Testing
 
@@ -69,7 +71,18 @@ emacs-task-journal-mcp/
 ├── uv.lock                # Lock file
 ├── server.py              # Main MCP server implementation
 ├── emacs_ediff.el         # Emacs Lisp for ediff approval workflow
-└── manual_test_ediff.py   # Manual test script for ediff approval
+├── manual_test_ediff.py   # Manual test script for ediff approval
+├── resources/guides/      # MCP resource guide files
+│   ├── task-format.md
+│   ├── journal-format.md
+│   └── project-format.md
+└── tests/
+    ├── conftest.py        # Shared fixtures and factories
+    ├── test_config.py
+    ├── test_journal.py
+    ├── test_projects.py
+    ├── test_resources.py
+    └── test_tasks.py
 ```
 
 ## Key Design Decisions
@@ -83,9 +96,9 @@ The `orgmunge` library provides proper AST-based manipulation of org files. This
 
 Reference implementation: `org_munge.py` in project root shows patterns for using orgmunge.
 
-### Journal Operations Use Manual Parsing
+### Journal and Project Operations Use Manual Parsing
 
-Journal files have a simpler structure (`* date` heading with `** time entry` children) that doesn't require full AST manipulation. Manual parsing is sufficient and avoids complexity.
+Journal files have a simpler structure (`* date` heading with `** time entry` children) that doesn't require full AST manipulation. Project files are one heading per file with level-2 sections. Both use manual parsing for simplicity.
 
 ### Tasks Accept Complete Org-Formatted Strings
 
@@ -120,6 +133,7 @@ The server provides comprehensive documentation via MCP resources, eliminating t
 **Resource Structure:**
 - `emacs-org://guide/task-format` - Task format specification
 - `emacs-org://guide/journal-format` - Journal format specification
+- `emacs-org://guide/project-format` - Project format specification
 
 **Implementation:**
 - Guide content stored in `resources/guides/*.md` markdown files
@@ -139,6 +153,8 @@ The server provides comprehensive documentation via MCP resources, eliminating t
 |------|------|-------------|
 | Tasks | `~/org/tasks.org` | Task list with Tasks/Completed Tasks sections |
 | Journal | `~/org/journal/YYYYMMDD` | Daily journal files (with or without `.org` extension) |
+| Projects | `~/org/projects/<slug>.org` | Individual project files |
+| Project Index | `~/org/projects/index.org` | Auto-generated project index (do not edit) |
 
 ## Configuration
 
@@ -148,6 +164,7 @@ All settings can be overridden via environment variables or command-line flags:
 |----------|---------|-------------|
 | `ORG_DIR` / `--org-dir` | `~/org` | Base org directory |
 | `JOURNAL_DIR` / `--journal-dir` | `$ORG_DIR/journal` | Journal files directory |
+| `PROJECTS_DIR` / `--projects-dir` | `$ORG_DIR/projects` | Project files directory |
 | `ACTIVE_SECTION` / `--active-section` | `Tasks` | Section name for active/TODO tasks |
 | `COMPLETED_SECTION` / `--completed-section` | `Completed Tasks` | Section name for completed/DONE tasks |
 | `HIGH_LEVEL_SECTION` / `--high-level-section` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
@@ -267,11 +284,22 @@ Key elements:
 | `update_journal_entry` | Update existing entry |
 | `search_journal` | Search entries across recent days |
 
+### Project Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_projects` | List all projects, optionally filtered by status |
+| `get_project` | Get project by slug, CUSTOM_ID, or title substring |
+| `create_project` | Create new project file from org-formatted string |
+| `update_project` | Update project section, properties, headline, or tags |
+| `search_projects` | Search across all projects |
+| `link_task_to_project` | Add a task link to a project's Related Tasks section |
+
 ## Code Style
 
 - Use `match/case` statements instead of `if/elif/else` chains
 - Type hints throughout (Python 3.13+ syntax: `list[str]`, `str | None`)
-- Dataclasses for structured data (`Task`, `JournalEntry`)
+- Dataclasses for structured data (`Task`, `JournalEntry`, `Project`)
 - Async functions for MCP handlers (required by MCP SDK)
 
 ## Testing Checklist

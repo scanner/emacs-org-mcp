@@ -1,11 +1,73 @@
 """Tests for MCP resource listing and reading."""
 
 import asyncio
+import json
+import subprocess
+import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-import server
+from mcp_server.resources import (
+    get_journal_format_guide,
+    get_project_format_guide,
+    get_task_format_guide,
+    list_resources,
+    load_guide,
+    read_resource,
+)
+
+
+class TestServerCapabilities:
+    """Tests that the MCP server advertises required capabilities to clients.
+
+    These tests catch the regression where ServerCapabilities() was constructed
+    without 'resources' or 'tools', causing MCP clients to never request them.
+    """
+
+    @pytest.fixture
+    def server_init_response(self) -> dict[str, object]:
+        """Run the real server process and perform the MCP initialize handshake."""
+        server_py = Path(__file__).parent.parent / "server.py"
+        init_request = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0.1"},
+                },
+            }
+        )
+        result = subprocess.run(
+            [sys.executable, str(server_py)],
+            input=init_request,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return cast(dict[str, object], json.loads(result.stdout.strip()))
+
+    @pytest.mark.parametrize("capability", ["resources", "tools"])
+    def test_server_advertises_capability(
+        self, server_init_response: dict, capability: str
+    ) -> None:
+        """
+        GIVEN the MCP server starts and receives an initialize request
+        WHEN it returns its capabilities
+        THEN 'resources' and 'tools' must both be present so clients know to
+             request them — omitting either silently breaks resource/tool access
+        """
+        capabilities = server_init_response["result"]["capabilities"]
+        assert capability in capabilities, (
+            f"ServerCapabilities() is missing '{capability}' — "
+            f"MCP clients will not request {capability}. "
+            f"Add {capability}={capability.capitalize()}Capability() to the "
+            f"ServerCapabilities(...) call in server.py."
+        )
 
 
 class TestLoadGuide:
@@ -16,6 +78,7 @@ class TestLoadGuide:
         [
             "task-format.md",
             "journal-format.md",
+            "project-format.md",
         ],
     )
     def test_load_guide_returns_file_content(self, filename: str) -> None:
@@ -26,7 +89,7 @@ class TestLoadGuide:
         """
         guides_dir = Path(__file__).parent.parent / "resources" / "guides"
         expected = (guides_dir / filename).read_text()
-        actual = server.load_guide(filename)
+        actual = load_guide(filename)
         assert actual == expected
 
     def test_load_nonexistent_guide(self) -> None:
@@ -36,7 +99,7 @@ class TestLoadGuide:
         Then it should raise FileNotFoundError
         """
         with pytest.raises(FileNotFoundError):
-            server.load_guide("nonexistent.md")
+            load_guide("nonexistent.md")
 
 
 class TestResourceContentGenerators:
@@ -45,8 +108,9 @@ class TestResourceContentGenerators:
     @pytest.mark.parametrize(
         "func,filename",
         [
-            (server.get_task_format_guide, "task-format.md"),
-            (server.get_journal_format_guide, "journal-format.md"),
+            (get_task_format_guide, "task-format.md"),
+            (get_journal_format_guide, "journal-format.md"),
+            (get_project_format_guide, "project-format.md"),
         ],
     )
     def test_guide_generator_returns_file_content(
@@ -72,11 +136,12 @@ class TestListResources:
         When it returns the list of available resources
         Then it should include both guide resources
         """
-        resources = asyncio.run(server.list_resources())
+        resources = asyncio.run(list_resources())
 
         guide_uris = [
             "emacs-org://guide/task-format",
             "emacs-org://guide/journal-format",
+            "emacs-org://guide/project-format",
         ]
 
         actual_uris = [str(r.uri) for r in resources]
@@ -92,6 +157,7 @@ class TestReadResource:
         [
             ("emacs-org://guide/task-format", "task-format.md"),
             ("emacs-org://guide/journal-format", "journal-format.md"),
+            ("emacs-org://guide/project-format", "project-format.md"),
         ],
     )
     def test_read_resource_returns_file_content(
@@ -104,7 +170,7 @@ class TestReadResource:
         """
         guides_dir = Path(__file__).parent.parent / "resources" / "guides"
         expected = (guides_dir / filename).read_text()
-        result = asyncio.run(server.read_resource(uri))
+        result = asyncio.run(read_resource(uri))
 
         # read_resource now returns list[ReadResourceContents]
         assert isinstance(result, list)
@@ -119,7 +185,7 @@ class TestReadResource:
         Then it should raise ValueError
         """
         with pytest.raises(ValueError, match="Unknown resource"):
-            asyncio.run(server.read_resource("emacs-org://guide/nonexistent"))
+            asyncio.run(read_resource("emacs-org://guide/nonexistent"))
 
     def test_all_listed_guides_are_readable(self) -> None:
         """
@@ -128,7 +194,7 @@ class TestReadResource:
         Then all should successfully return the file contents
         """
         guides_dir = Path(__file__).parent.parent / "resources" / "guides"
-        resources = asyncio.run(server.list_resources())
+        resources = asyncio.run(list_resources())
 
         guide_resources = [
             r for r in resources if str(r.uri).startswith("emacs-org://guide/")
@@ -138,12 +204,13 @@ class TestReadResource:
         uri_to_file = {
             "emacs-org://guide/task-format": "task-format.md",
             "emacs-org://guide/journal-format": "journal-format.md",
+            "emacs-org://guide/project-format": "project-format.md",
         }
 
         for resource in guide_resources:
             uri_str = str(resource.uri)
             expected = (guides_dir / uri_to_file[uri_str]).read_text()
-            result = asyncio.run(server.read_resource(uri_str))
+            result = asyncio.run(read_resource(uri_str))
 
             # read_resource now returns list[ReadResourceContents]
             assert isinstance(result, list)

@@ -5,8 +5,18 @@ import uuid
 from pathlib import Path
 
 import pytest
+from orgmunge import Org
 
-import server
+from mcp_server.config import global_state
+from mcp_server.tasks import (
+    create_task,
+    find_task,
+    list_tasks,
+    move_task,
+    search_tasks,
+    update_task,
+)
+from mcp_server.utils import format_simple_diff
 from tests.conftest import (
     TasksFileInfo,
     make_task,
@@ -18,7 +28,7 @@ class TestListTasks:
 
     def test_list_active_tasks(self, sample_tasks_file: TasksFileInfo) -> None:
         """Test listing tasks from active section."""
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
 
         assert len(tasks) == sample_tasks_file["active_count"]
         assert all(t.section == "Tasks" for t in tasks)
@@ -27,7 +37,7 @@ class TestListTasks:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test listing tasks from completed section."""
-        tasks = server.list_tasks("Completed Tasks")
+        tasks = list_tasks("Completed Tasks")
 
         assert len(tasks) == sample_tasks_file["completed_count"]
         assert all(t.section == "Completed Tasks" for t in tasks)
@@ -35,7 +45,7 @@ class TestListTasks:
 
     def test_list_empty_section(self, empty_tasks_file: Path) -> None:
         """Test listing tasks from an empty section."""
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
 
         assert len(tasks) == 0
 
@@ -43,7 +53,7 @@ class TestListTasks:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test that listed tasks have all expected fields populated."""
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
 
         for task in tasks:
             assert task.custom_id != ""  # All our test tasks have names
@@ -58,7 +68,7 @@ class TestFindTask:
 
     def test_find_by_custom_id(self, sample_tasks_file: TasksFileInfo) -> None:
         """Test finding a task by its :CUSTOM_ID: value."""
-        result = server.find_task("task-jira-1234")
+        result = find_task("task-jira-1234")
 
         assert result is not None
         task, heading, section, org = result
@@ -67,7 +77,7 @@ class TestFindTask:
 
     def test_find_by_ticket_id(self, sample_tasks_file: TasksFileInfo) -> None:
         """Test finding a task by JIRA ticket ID in headline."""
-        result = server.find_task("JIRA-1234")
+        result = find_task("JIRA-1234")
 
         assert result is not None
         task, _, _, _ = result
@@ -77,7 +87,7 @@ class TestFindTask:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test finding a task by partial headline match."""
-        result = server.find_task("new feature")
+        result = find_task("new feature")
 
         assert result is not None
         task, _, _, _ = result
@@ -89,28 +99,26 @@ class TestFindTask:
         """Test finding a task in a specific section only."""
         # This task is in Active section
         #
-        result = server.find_task("task-jira-1234", section="Tasks")
+        result = find_task("task-jira-1234", section="Tasks")
         assert result is not None
 
         # Should not find it in Completed section
         #
         with pytest.raises(ValueError, match="Could not find task"):
-            result = server.find_task(
-                "task-jira-1234", section="Completed Tasks"
-            )
+            result = find_task("task-jira-1234", section="Completed Tasks")
 
     def test_find_nonexistent_task(
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test that finding a nonexistent task returns None."""
         with pytest.raises(ValueError, match="Could not find task"):
-            server.find_task("task-does-not-exist")
+            find_task("task-does-not-exist")
 
     def test_find_completed_task(
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test finding a task in the completed section."""
-        result = server.find_task("task-jira-4321")
+        result = find_task("task-jira-4321")
 
         assert result is not None
         task, _, _, _ = result
@@ -131,14 +139,14 @@ class TestCreateTask:
             description="This is a new task",
         )
 
-        result = server.create_task("Tasks", new_task)
+        result = create_task("Tasks", new_task)
 
         section, content = result
         assert section == "Tasks"
         assert "New task headline" in content
 
         # Verify task was added
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
         assert len(tasks) == 1
         assert tasks[0].custom_id == "task-new"
 
@@ -152,9 +160,9 @@ class TestCreateTask:
             status="DONE",
         )
 
-        server.create_task("Completed Tasks", done_task)
+        create_task("Completed Tasks", done_task)
 
-        tasks = server.list_tasks("Completed Tasks")
+        tasks = list_tasks("Completed Tasks")
         assert len(tasks) == 1
         assert tasks[0].status == "DONE"
 
@@ -165,9 +173,9 @@ class TestCreateTask:
         original_count = sample_tasks_file["active_count"]
 
         new_task = make_task("Another task", "task-another")
-        server.create_task("Tasks", new_task)
+        create_task("Tasks", new_task)
 
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
         assert len(tasks) == original_count + 1
 
     def test_create_invalid_section_raises(
@@ -177,7 +185,7 @@ class TestCreateTask:
         new_task = make_task("Task", "task-x")
 
         with pytest.raises(ValueError, match="Section not found"):
-            server.create_task("Nonexistent Section", new_task)
+            create_task("Nonexistent Section", new_task)
 
 
 class TestUpdateTask:
@@ -194,7 +202,7 @@ class TestUpdateTask:
             description="Updated description",
         )
 
-        result = server.update_task("task-jira-1234", updated_task)
+        result = update_task("task-jira-1234", updated_task)
 
         old_task, new_content, was_moved, old_section, new_section = result
         assert old_task.custom_id == "task-jira-1234"
@@ -203,7 +211,7 @@ class TestUpdateTask:
         assert old_section == new_section == "Tasks"
 
         # Verify the update
-        found = server.find_task("task-jira-1234")
+        found = find_task("task-jira-1234")
         assert found is not None
         task, _, _, _ = found
         assert "Updated headline" in task.headline
@@ -213,8 +221,8 @@ class TestUpdateTask:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test that updating status to DONE moves task to Completed section."""
-        original_active = len(server.list_tasks("Tasks"))
-        original_completed = len(server.list_tasks("Completed Tasks"))
+        original_active = len(list_tasks("Tasks"))
+        original_completed = len(list_tasks("Completed Tasks"))
 
         done_task = make_task(
             headline="JIRA-1234 Fix authentication bug",
@@ -222,7 +230,7 @@ class TestUpdateTask:
             status="DONE",
         )
 
-        result = server.update_task("task-jira-1234", done_task)
+        result = update_task("task-jira-1234", done_task)
         _, _, was_moved, old_section, new_section = result
 
         assert was_moved
@@ -230,14 +238,14 @@ class TestUpdateTask:
         assert new_section == "Completed Tasks"
 
         # Verify it moved sections
-        active = server.list_tasks("Tasks")
-        completed = server.list_tasks("Completed Tasks")
+        active = list_tasks("Tasks")
+        completed = list_tasks("Completed Tasks")
 
         assert len(active) == original_active - 1
         assert len(completed) == original_completed + 1
 
         # Verify it's findable in completed
-        found = server.find_task("task-jira-1234", section="Completed Tasks")
+        found = find_task("task-jira-1234", section="Completed Tasks")
         assert found is not None
 
     def test_update_nonexistent_task_raises(
@@ -247,7 +255,7 @@ class TestUpdateTask:
         task = make_task("X", "task-x")
 
         with pytest.raises(ValueError, match="Could not find"):
-            server.update_task("task-nonexistent", task)
+            update_task("task-nonexistent", task)
 
 
 class TestMoveTask:
@@ -257,7 +265,7 @@ class TestMoveTask:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test moving a task from Active to Completed."""
-        result = server.move_task(
+        result = move_task(
             "task-jira-1234",
             "Tasks",
             "Completed Tasks",
@@ -269,18 +277,18 @@ class TestMoveTask:
         assert to_section == "Completed Tasks"
 
         # Verify it's in the new section
-        found = server.find_task("task-jira-1234", section="Completed Tasks")
+        found = find_task("task-jira-1234", section="Completed Tasks")
         assert found is not None
 
         # Verify it's not in the old section
         with pytest.raises(ValueError, match="Could not find"):
-            found = server.find_task("task-jira-1234", section="Tasks")
+            found = find_task("task-jira-1234", section="Tasks")
 
     def test_move_task_to_active(
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test moving a task from Completed back to Active."""
-        result = server.move_task(
+        result = move_task(
             "task-jira-4321",
             "Completed Tasks",
             "Tasks",
@@ -291,7 +299,7 @@ class TestMoveTask:
         assert from_section == "Completed Tasks"
         assert to_section == "Tasks"
 
-        found = server.find_task("task-jira-4321", section="Tasks")
+        found = find_task("task-jira-4321", section="Tasks")
         assert found is not None
 
     def test_move_task_without_properties_drawer(
@@ -309,16 +317,16 @@ class TestMoveTask:
 This task has no properties drawer at all.
 """
         # Add it to the Completed section
-        content = server.global_state.config.tasks_file.read_text()
+        content = global_state.config.tasks_file.read_text()
         content = re.sub(
             rf"(\* {'Completed Tasks'}\n)",
             rf"\1{task_without_props}\n",
             content,
         )
-        server.global_state.config.tasks_file.write_text(content)
+        global_state.config.tasks_file.write_text(content)
 
         # Move the task to Active section - should not raise an error
-        result = server.move_task(
+        result = move_task(
             "Task without properties",  # Find by headline
             "Completed Tasks",
             "Tasks",
@@ -330,7 +338,7 @@ This task has no properties drawer at all.
         assert to_section == "Tasks"
 
         # Verify it's in the Active section now
-        found = server.find_task("Task without properties", section="Tasks")
+        found = find_task("Task without properties", section="Tasks")
         assert found is not None
         task, _, _, _ = found
         # Task should still have no custom_id since it had no properties
@@ -355,16 +363,16 @@ This task has no properties drawer at all.
 This task is DONE but has no CLOSED timestamp.
 """
         # Add it to the Completed section
-        content = server.global_state.config.tasks_file.read_text()
+        content = global_state.config.tasks_file.read_text()
         content = re.sub(
             rf"(\* {'Completed Tasks'}\n)",
             rf"\1{task_no_closed}\n",
             content,
         )
-        server.global_state.config.tasks_file.write_text(content)
+        global_state.config.tasks_file.write_text(content)
 
         # Move the task to Active section - should not raise an error
-        result = server.move_task(
+        result = move_task(
             "task-no-closed",
             "Completed Tasks",
             "Tasks",
@@ -376,7 +384,7 @@ This task is DONE but has no CLOSED timestamp.
         assert to_section == "Tasks"
 
         # Verify it's in the Active section now
-        found = server.find_task("task-no-closed", section="Tasks")
+        found = find_task("task-no-closed", section="Tasks")
         assert found is not None
         task, _, _, _ = found
         assert task.custom_id == "task-no-closed"
@@ -388,7 +396,7 @@ This task is DONE but has no CLOSED timestamp.
     ) -> None:
         """Test that moving a nonexistent task raises ValueError."""
         with pytest.raises(ValueError, match="Could not find"):
-            server.move_task(
+            move_task(
                 "task-nonexistent",
                 "Tasks",
                 "Completed Tasks",
@@ -399,7 +407,7 @@ This task is DONE but has no CLOSED timestamp.
     ) -> None:
         """Test that moving to an invalid section raises ValueError."""
         with pytest.raises(ValueError, match="not found"):
-            server.move_task("task-jira-1234", "Tasks", "Invalid Section")
+            move_task("task-jira-1234", "Tasks", "Invalid Section")
 
 
 class TestSearchTasks:
@@ -407,7 +415,7 @@ class TestSearchTasks:
 
     def test_search_by_headline(self, sample_tasks_file: TasksFileInfo) -> None:
         """Test searching tasks by headline content."""
-        results = server.search_tasks("authentication")
+        results = search_tasks("authentication")
 
         assert len(results) == 1
         assert "authentication" in results[0].headline.lower()
@@ -416,14 +424,14 @@ class TestSearchTasks:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test searching tasks by ticket ID."""
-        results = server.search_tasks("JIRA-1234")
+        results = search_tasks("JIRA-1234")
 
         assert len(results) == 1
         assert "JIRA-1234" in results[0].headline
 
     def test_search_by_content(self, sample_tasks_file: TasksFileInfo) -> None:
         """Test searching tasks by body content."""
-        results = server.search_tasks("auth flow")
+        results = search_tasks("auth flow")
 
         assert len(results) >= 1
         # The task with "auth flow" in description should be found
@@ -434,7 +442,7 @@ class TestSearchTasks:
     ) -> None:
         """Test that search finds tasks in both Active and Completed sections."""
         # Search for something that matches tasks in both sections
-        results = server.search_tasks("JIRA")
+        results = search_tasks("JIRA")
 
         # Should find both JIRA-1234 (active) and JIRA-4321 (completed)
         assert len(results) == 2
@@ -444,7 +452,7 @@ class TestSearchTasks:
 
     def test_search_no_results(self, sample_tasks_file: TasksFileInfo) -> None:
         """Test search with no matching results."""
-        results = server.search_tasks("xyzzy-not-found")
+        results = search_tasks("xyzzy-not-found")
 
         assert len(results) == 0
 
@@ -452,9 +460,9 @@ class TestSearchTasks:
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
         """Test that search is case-insensitive."""
-        results_lower = server.search_tasks("authentication")
-        results_upper = server.search_tasks("AUTHENTICATION")
-        results_mixed = server.search_tasks("Authentication")
+        results_lower = search_tasks("authentication")
+        results_upper = search_tasks("AUTHENTICATION")
+        results_mixed = search_tasks("Authentication")
 
         assert len(results_lower) == len(results_upper) == len(results_mixed)
 
@@ -467,7 +475,7 @@ class TestFormatSimpleDiff:
         old = "line1\nline2"
         new = "line1\nline2\nline3"
 
-        diff = server.format_simple_diff(old, new)
+        diff = format_simple_diff(old, new)
 
         assert "+ line3" in diff
 
@@ -476,7 +484,7 @@ class TestFormatSimpleDiff:
         old = "line1\nline2\nline3"
         new = "line1\nline2"
 
-        diff = server.format_simple_diff(old, new)
+        diff = format_simple_diff(old, new)
 
         assert "− line3" in diff
 
@@ -485,7 +493,7 @@ class TestFormatSimpleDiff:
         old = "- [ ] Pending item"
         new = "- [X] Pending item"
 
-        diff = server.format_simple_diff(old, new)
+        diff = format_simple_diff(old, new)
 
         assert "− - [ ] Pending item" in diff
         assert "+ - [X] Pending item" in diff
@@ -494,7 +502,7 @@ class TestFormatSimpleDiff:
         """Test diff when content is identical."""
         content = "line1\nline2"
 
-        diff = server.format_simple_diff(content, content)
+        diff = format_simple_diff(content, content)
 
         assert "no changes" in diff.lower()
 
@@ -515,10 +523,10 @@ class TestHighLevelTasksChecklist:
             custom_id="task-gh-123",
         )
 
-        server.create_task("Tasks", new_task)
+        create_task("Tasks", new_task)
 
         # Read the file and verify checklist was updated
-        org = server.Org(str(server.global_state.config.tasks_file))
+        org = Org(str(global_state.config.tasks_file))
         high_level_section = None
         for heading in org.get_all_headings():
             if heading.headline.level == 1:
@@ -549,10 +557,10 @@ class TestHighLevelTasksChecklist:
             status="DONE",
         )
 
-        server.update_task("task-jira-1234", done_task)
+        update_task("task-jira-1234", done_task)
 
         # Read the file and verify checklist was updated
-        org = server.Org(str(server.global_state.config.tasks_file))
+        org = Org(str(global_state.config.tasks_file))
         high_level_section = None
         for heading in org.get_all_headings():
             if heading.headline.level == 1:
@@ -581,10 +589,10 @@ class TestHighLevelTasksChecklist:
             custom_id="task-jira-456",
         )
 
-        server.create_task("Tasks", new_task)
+        create_task("Tasks", new_task)
 
         # Read the file and verify checklist strips ticket ID
-        org = server.Org(str(server.global_state.config.tasks_file))
+        org = Org(str(global_state.config.tasks_file))
         high_level_section = None
         for heading in org.get_all_headings():
             if heading.headline.level == 1:
@@ -616,10 +624,10 @@ class TestUUIDGeneration:
             custom_id="task-no-uuid",
         )
 
-        server.create_task("Tasks", new_task)
+        create_task("Tasks", new_task)
 
         # Verify the task has a UUID
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
         assert len(tasks) == 1
         assert tasks[0].id != ""
         assert len(tasks[0].id) == 36  # Standard UUID format
@@ -644,10 +652,10 @@ class TestUUIDGeneration:
 Task description here.
 """
 
-        server.create_task("Tasks", task_with_uuid)
+        create_task("Tasks", task_with_uuid)
 
         # Verify the UUID was preserved
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
         assert len(tasks) == 1
         assert tasks[0].id == existing_uuid
 
@@ -663,9 +671,9 @@ Task description here.
             custom_id="task-another",
         )
 
-        server.create_task("Tasks", new_task)
+        create_task("Tasks", new_task)
 
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
         assert len(tasks) == 1
 
         # Verify it's a valid UUID by parsing it
@@ -698,16 +706,16 @@ class TestTaskIDExtraction:
 This task has an explicit ID.
 """
         # Add it to the file
-        content = server.global_state.config.tasks_file.read_text()
+        content = global_state.config.tasks_file.read_text()
 
         content = re.sub(
             rf"(\* {'Tasks'}\n)",
             rf"\1{task_with_id}\n",
             content,
         )
-        server.global_state.config.tasks_file.write_text(content)
+        global_state.config.tasks_file.write_text(content)
 
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
 
         # Find the task we added
         task_with_explicit_id = next(
@@ -737,16 +745,16 @@ This task has an explicit ID.
 Finding this task.
 """
         # Add it to the file
-        content = server.global_state.config.tasks_file.read_text()
+        content = global_state.config.tasks_file.read_text()
 
         content = re.sub(
             rf"(\* {'Tasks'}\n)",
             rf"\1{task_with_id}\n",
             content,
         )
-        server.global_state.config.tasks_file.write_text(content)
+        global_state.config.tasks_file.write_text(content)
 
-        result = server.find_task("task-find-by-id")
+        result = find_task("task-find-by-id")
 
         assert result is not None
         task, _, _, _ = result
@@ -769,10 +777,10 @@ class TestTaskTimestamps:
             custom_id="task-new",
         )
 
-        server.create_task("Tasks", new_task)
+        create_task("Tasks", new_task)
 
         # Verify the task has :CREATED: timestamp
-        tasks = server.list_tasks("Tasks")
+        tasks = list_tasks("Tasks")
         assert len(tasks) == 1
         assert tasks[0].created != ""
         # Active timestamp format: <YYYY-MM-DD DDD HH:MM>
@@ -793,10 +801,10 @@ class TestTaskTimestamps:
             status="TODO",
         )
 
-        server.update_task("task-jira-1234", updated_task)
+        update_task("task-jira-1234", updated_task)
 
         # Verify the task has :MODIFIED: timestamp
-        result = server.find_task("task-jira-1234")
+        result = find_task("task-jira-1234")
         assert result is not None
         task, _, _, _ = result
         assert task.modified != ""
@@ -818,10 +826,10 @@ class TestTaskTimestamps:
             status="DONE",
         )
 
-        server.update_task("task-jira-1234", done_task)
+        update_task("task-jira-1234", done_task)
 
         # Verify the task has :CLOSED: timestamp
-        result = server.find_task("task-jira-1234")
+        result = find_task("task-jira-1234")
         assert result is not None
         task, _, _, _ = result
         assert task.closed != ""
@@ -843,11 +851,11 @@ class TestTaskTimestamps:
             custom_id="task-jira-1234",
             status="DONE",
         )
-        server.update_task("task-jira-1234", done_task)
+        update_task("task-jira-1234", done_task)
 
         # Verify it has :CLOSED:
         #
-        result = server.find_task("task-jira-1234")
+        result = find_task("task-jira-1234")
         assert result is not None
         task, _, _, _ = result
         assert task.closed is not None
@@ -859,11 +867,11 @@ class TestTaskTimestamps:
             custom_id="task-jira-1234",
             status="TODO",
         )
-        server.update_task("task-jira-1234", reopened_task)
+        update_task("task-jira-1234", reopened_task)
 
         # Verify :CLOSED: was cleared
         #
-        result = server.find_task("task-jira-1234")
+        result = find_task("task-jira-1234")
         assert result is not None
         task, _, _, _ = result
 
@@ -885,10 +893,10 @@ class TestTaskTimestamps:
             custom_id="task-new-feature",
             status="DONE",
         )
-        server.update_task("task-new-feature", done_task)
+        update_task("task-new-feature", done_task)
 
         # Get the original :CLOSED: timestamp
-        result = server.find_task("task-new-feature")
+        result = find_task("task-new-feature")
         assert result is not None
         task, _, _, _ = result
         original_closed = task.closed
@@ -900,10 +908,10 @@ class TestTaskTimestamps:
             custom_id="task-new-feature",
             status="DONE",
         )
-        server.update_task("task-new-feature", updated_done_task)
+        update_task("task-new-feature", updated_done_task)
 
         # Verify :MODIFIED: was set but :CLOSED: was preserved
-        result = server.find_task("task-new-feature")
+        result = find_task("task-new-feature")
         assert result is not None
         task, _, _, _ = result
         assert task.modified != ""
@@ -931,16 +939,16 @@ class TestTaskTimestamps:
 This task is DONE but has no CLOSED timestamp.
 """
         # Add it to the Active section
-        content = server.global_state.config.tasks_file.read_text()
+        content = global_state.config.tasks_file.read_text()
         content = re.sub(
             rf"(\* {'Tasks'}\n)",
             rf"\1{task_done_no_closed}\n",
             content,
         )
-        server.global_state.config.tasks_file.write_text(content)
+        global_state.config.tasks_file.write_text(content)
 
         # Verify the task exists and has no :CLOSED:
-        result = server.find_task("task-done-no-closed")
+        result = find_task("task-done-no-closed")
         assert result is not None
         task, _, _, _ = result
         assert task.status == "DONE"
@@ -952,10 +960,10 @@ This task is DONE but has no CLOSED timestamp.
             custom_id="task-done-no-closed",
             status="TODO",
         )
-        server.update_task("task-done-no-closed", reopened_task)
+        update_task("task-done-no-closed", reopened_task)
 
         # Verify it's now TODO and still has no :CLOSED:
-        result = server.find_task("task-done-no-closed")
+        result = find_task("task-done-no-closed")
         assert result is not None
         task, _, _, _ = result
         assert task.status == "TODO"

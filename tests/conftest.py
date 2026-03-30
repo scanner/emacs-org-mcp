@@ -10,7 +10,7 @@ from typing import TypedDict
 import pytest
 from pytest_mock import MockerFixture
 
-import server
+from mcp_server.config import Config, global_state
 
 # =============================================================================
 # Type Definitions
@@ -33,6 +33,14 @@ class JournalFilesInfo(TypedDict):
     today: date
     today_entry_count: int
     today_file: Path
+
+
+class ProjectFilesInfo(TypedDict):
+    """Metadata returned by sample_project_files fixture."""
+
+    projects_dir: Path
+    project_count: int
+    project_slugs: list[str]
 
 
 # =============================================================================
@@ -166,6 +174,65 @@ def make_journal_entry(
     return "\n".join(lines)
 
 
+def make_project(
+    title: str,
+    slug: str,
+    status: str = "active",
+    description: str = "",
+    goals: list[tuple[bool, str]] | None = None,
+    repo: str = "",
+    project_id: str = "TEST-UUID-1234",
+    notes: str = "",
+) -> str:
+    """
+    Factory to create a project file content string.
+
+    Args:
+        title: Project title
+        slug: Project slug (used in CUSTOM_ID as project-<slug>)
+        status: Project status (active, planning, on-hold, completed)
+        description: Description section content
+        goals: List of (completed, text) tuples for Goals checklist
+        repo: Repository URL
+        project_id: UUID for :ID: property
+        notes: Notes section content
+
+    Returns:
+        Org-formatted project file string
+    """
+    lines: list[str] = [f"* {title}  :project:"]
+    lines.append(":PROPERTIES:")
+    lines.append(f"   :ID:       {project_id}")
+    lines.append(f"   :CUSTOM_ID: project-{slug}")
+    lines.append("   :CREATED:  <2026-01-15 Thu 10:00>")
+    lines.append("   :MODIFIED: [2026-01-15 Thu 10:00]")
+    lines.append(f"   :STATUS:   {status}")
+    if repo:
+        lines.append(f"   :REPO:     {repo}")
+    lines.append(":END:")
+
+    if description:
+        lines.append("")
+        lines.append("** Description")
+        lines.append(description)
+
+    if goals:
+        completed = sum(1 for done, _ in goals if done)
+        total = len(goals)
+        lines.append("")
+        lines.append(f"** Goals [{completed}/{total}]")
+        for done, text in goals:
+            marker = "[X]" if done else "[ ]"
+            lines.append(f"- {marker} {text}")
+
+    if notes:
+        lines.append("")
+        lines.append("** Notes")
+        lines.append(notes)
+
+    return "\n".join(lines) + "\n"
+
+
 def make_journal_file(entries: list[str], file_date: date) -> str:
     """
     Factory to create a complete journal file content.
@@ -190,32 +257,32 @@ def make_journal_file(entries: list[str], file_date: date) -> str:
 
 
 @pytest.fixture
-def config_factory(mocker: MockerFixture) -> Callable[[server.Config], None]:
+def config_factory(mocker: MockerFixture) -> Callable[[Config], None]:
     """
     Factory fixture that returns a callable to configure server with custom Config.
 
     Usage:
         def test_something(config_factory):
-            config_factory(server.Config(
+            config_factory(Config(
                 org_dir=Path("/tmp/test"),
                 ediff_approval=True
             ))
-            # Now server.global_state.config is set for this test
+            # Now global_state.config is set for this test
 
     Returns:
         Callable that accepts a Config object and patches global_state.config
     """
 
-    def _configure(config: server.Config) -> None:
+    def _configure(config: Config) -> None:
         """Set the global_state.config for this test."""
-        mocker.patch.object(server.global_state, "config", config)
+        mocker.patch.object(global_state, "config", config)
 
     return _configure
 
 
 @pytest.fixture
 def temp_org_dir(
-    tmp_path: Path, config_factory: Callable[[server.Config], None]
+    tmp_path: Path, config_factory: Callable[[Config], None]
 ) -> Path:
     """
     Create a temporary org directory structure and configure server to use it.
@@ -225,12 +292,15 @@ def temp_org_dir(
     # Create directory structure
     journal_dir = tmp_path / "journal"
     journal_dir.mkdir()
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
 
     # Configure server to use this temp directory (ediff disabled for tests)
     config_factory(
-        server.Config(
+        Config(
             org_dir=tmp_path,
             journal_dir=journal_dir,
+            projects_dir=projects_dir,
             ediff_approval=False,
         )
     )
@@ -363,3 +433,71 @@ def empty_tasks_file(temp_org_dir: Path) -> Path:
 def empty_journal_dir(temp_org_dir: Path) -> Path:
     """Return the empty journal directory."""
     return temp_org_dir / "journal"
+
+
+@pytest.fixture
+def sample_project_files(temp_org_dir: Path) -> ProjectFilesInfo:
+    """
+    Create sample project files for testing.
+
+    Returns dict with project metadata for assertions.
+    """
+    projects_dir = temp_org_dir / "projects"
+
+    # Active project with repo
+    (projects_dir / "booklore.org").write_text(
+        make_project(
+            title="Booklore: Local Fiction RAG Platform",
+            slug="booklore",
+            status="active",
+            description="A local-first RAG platform for querying fiction books.",
+            goals=[
+                (True, "EPUB extraction"),
+                (True, "Chunking pipeline"),
+                (False, "Embedding pipeline"),
+                (False, "Query interface"),
+            ],
+            repo="https://github.com/scanner/booklore",
+            project_id="AAAA-BBBB-CCCC-1111",
+            notes="Using Qdrant for vector storage.",
+        )
+    )
+
+    # Completed project
+    (projects_dir / "email-migration.org").write_text(
+        make_project(
+            title="Email Service Migration",
+            slug="email-migration",
+            status="completed",
+            description="Migrate email infrastructure to new provider.",
+            project_id="AAAA-BBBB-CCCC-2222",
+        )
+    )
+
+    # Planning project
+    (projects_dir / "infra.org").write_text(
+        make_project(
+            title="Infrastructure Modernization",
+            slug="infra",
+            status="planning",
+            description="Deploy k3s, Redis, MinIO across the cluster.",
+            goals=[
+                (False, "k3s setup"),
+                (False, "Redis cluster"),
+                (False, "MinIO deployment"),
+            ],
+            project_id="AAAA-BBBB-CCCC-3333",
+        )
+    )
+
+    return {
+        "projects_dir": projects_dir,
+        "project_count": 3,
+        "project_slugs": ["booklore", "email-migration", "infra"],
+    }
+
+
+@pytest.fixture
+def empty_projects_dir(temp_org_dir: Path) -> Path:
+    """Return the empty projects directory."""
+    return temp_org_dir / "projects"
