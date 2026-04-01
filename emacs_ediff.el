@@ -95,10 +95,65 @@ This runs after ediff has set up its buffers."
     (delete-frame org-mcp-ediff-frame))
   (setq org-mcp-ediff-frame nil))
 
+(defun org-mcp-fill-org-content (file)
+  "Fill paragraphs in FILE, skipping blocks that must not be wrapped.
+Visits FILE in org-mode and calls `fill-region' on each contiguous
+region of plain content, skipping:
+  - #+begin_src...#+end_src blocks (org-fill-paragraph hangs in them)
+  - :DRAWER:...:END: blocks (property/logbook drawers — structural, not prose)
+
+Additionally, list items whose content begins with an org bracket link
+([[...][...]]) are protected from line-breaking via `fill-nobreak-predicate',
+since inserting newlines inside or before a link corrupts the syntax."
+  (let ((buf (find-file-noselect file)))
+    (with-current-buffer buf
+      (unless (eq major-mode 'org-mode)
+        (org-mode))
+      (save-excursion
+        ;; Predicate: at any break point, check whether the current line is a
+        ;; list item whose body starts with an org bracket link.  If so, refuse
+        ;; to break anywhere on that line to avoid splitting [[path][text]].
+        (let* ((case-fold-search t)
+               (fill-start (point-min))
+               (link-list-nobreak
+                (lambda ()
+                  (save-match-data
+                    (save-excursion
+                      (beginning-of-line)
+                      (looking-at
+                       "[ \t]*\\([-+*]\\|[0-9]+[.)]\\)[ \t]+\\[\\[")))))
+               (fill-nobreak-predicate
+                (append fill-nobreak-predicate (list link-list-nobreak))))
+          (goto-char (point-min))
+          (while (re-search-forward
+                  "^[ \t]*\\(#\\+begin_src\\|:[[:alpha:]_]+:\\)"
+                  nil t)
+            (let ((block-start (match-beginning 0))
+                  (keyword (match-string 1)))
+              ;; Fill prose content before this block
+              (when (< fill-start block-start)
+                (fill-region fill-start block-start))
+              ;; Find the matching closing marker
+              (let ((end-re (if (string-prefix-p "#+" keyword)
+                                "^[ \t]*#\\+end_src"
+                              "^[ \t]*:END:")))
+                (if (re-search-forward end-re nil t)
+                    (setq fill-start (line-beginning-position 2))
+                  ;; No closing marker found — skip to end of buffer
+                  (setq fill-start (point-max))))))
+          ;; Fill any remaining prose after the last skipped block
+          (when (< fill-start (point-max))
+            (fill-region fill-start (point-max)))))
+      (save-buffer)
+      (kill-buffer buf))))
+
 (defun org-mcp-ediff-approve (old-file new-file)
   "Present OLD-FILE vs NEW-FILE in ediff, wait for user decision.
 User can edit NEW-FILE (buffer B) before approving.
 Returns \"approved\" or \"rejected\" as a string."
+  ;; Fill paragraphs in the proposed content before showing diff
+  (org-mcp-fill-org-content new-file)
+
   ;; Reset decision
   (setq org-mcp-ediff-decision nil)
 

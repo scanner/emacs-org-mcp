@@ -144,6 +144,76 @@ def get_project_path(slug: str) -> Path:
 
 ###############################################################################
 #
+def _parse_collapsed_properties(text: str) -> dict[str, str]:
+    """
+    Parse properties from a collapsed or fill-wrapped PROPERTIES drawer.
+
+    Handles cases where the drawer was incorrectly collapsed onto one line
+    (or wrapped across multiple lines with no proper key-per-line structure),
+    e.g.: ':PROPERTIES: :ID: abc123 :STATUS: planning :END:'
+
+    Uses ':UPPERCASE_KEY:' as delimiters between values, which is safe
+    because org property keys are always uppercase and timestamps/URLs
+    do not form matching ':UPPERCASE:' patterns.
+
+    Args:
+        text: The combined text of the collapsed drawer, with or without
+              the ':PROPERTIES:' prefix and ':END:' suffix.
+
+    Returns:
+        Dict of property name -> value
+    """
+    props: dict[str, str] = {}
+    text = text.strip()
+    if text.startswith(":PROPERTIES:"):
+        text = text[len(":PROPERTIES:") :].strip()
+    if text.endswith(":END:"):
+        text = text[: -len(":END:")].strip()
+
+    # Split on ':UPPERCASE_KEY:' patterns to separate key/value pairs.
+    # The [A-Z_]+ pattern won't match timestamps (digits) or URLs (//).
+    parts = re.split(r":([A-Z_]+):", text)
+    # parts layout: [pre-text, key1, val1, key2, val2, ...]
+    i = 1
+    while i + 1 <= len(parts) - 1:
+        key = parts[i]
+        value = parts[i + 1].strip()
+        if key:
+            props[key] = value
+        i += 2
+
+    return props
+
+
+###############################################################################
+#
+def _has_proper_properties_drawer(content: str) -> bool:
+    """
+    Return True if content has a properly-formatted multi-line PROPERTIES drawer.
+
+    A proper drawer has ':PROPERTIES:' alone on its line and ':END:' alone
+    on a later line.  Returns False if the drawer is absent or collapsed.
+
+    Args:
+        content: Full file content string
+
+    Returns:
+        True if the drawer is properly formatted, False otherwise
+    """
+    prop_start: int | None = None
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if stripped == ":PROPERTIES:":
+            prop_start = 0  # found proper opening
+        elif stripped == ":END:" and prop_start is not None:
+            return True
+        elif stripped.startswith(":PROPERTIES:") and stripped != ":PROPERTIES:":
+            return False  # collapsed format
+    return True  # no drawer at all is not a corruption
+
+
+###############################################################################
+#
 def parse_project_properties(
     lines: list[str], start_idx: int
 ) -> tuple[dict[str, str], int]:
@@ -250,14 +320,29 @@ def parse_project_file(file_path: Path) -> Project:
     if heading_idx == -1:
         raise ValueError(f"No level-1 heading found in {file_path}")
 
-    # Parse properties drawer
+    # Parse properties drawer — handles both proper multi-line format and
+    # the collapsed/fill-wrapped single-line format that can result from
+    # incorrect fill operations.
     props: dict[str, str] = {}
     content_start = heading_idx + 1
     for idx in range(heading_idx + 1, len(lines)):
-        if lines[idx].strip() == ":PROPERTIES:":
+        stripped = lines[idx].strip()
+        if stripped == ":PROPERTIES:":
+            # Normal multi-line format
             props, content_start = parse_project_properties(lines, idx)
             break
-        elif lines[idx].strip() and not lines[idx].startswith("#"):
+        elif stripped.startswith(":PROPERTIES:") and stripped != ":PROPERTIES:":
+            # Collapsed/wrapped format: collect lines until :END: is found,
+            # then parse the combined text.
+            combined = stripped
+            end_idx = idx
+            while ":END:" not in combined and end_idx + 1 < len(lines):
+                end_idx += 1
+                combined += " " + lines[end_idx].strip()
+            props = _parse_collapsed_properties(combined)
+            content_start = end_idx + 1
+            break
+        elif stripped and not lines[idx].startswith("#"):
             # Non-empty, non-comment line before properties means
             # no properties drawer.
             content_start = idx
@@ -721,7 +806,14 @@ def update_project(
 
     project = get_project(identifier)
     old_content = project.raw_content
-    new_content = old_content
+
+    # If the PROPERTIES drawer is in a collapsed/wrapped format (caused by
+    # incorrect fill operations), rebase on to_org() so that the drawer is
+    # restored to proper multi-line format before applying targeted updates.
+    if not _has_proper_properties_drawer(old_content):
+        new_content = project.to_org()
+    else:
+        new_content = old_content
 
     # Apply section update
     if section and content is not None:
