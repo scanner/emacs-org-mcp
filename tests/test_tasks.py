@@ -11,8 +11,10 @@ from mcp_server.config import global_state
 from mcp_server.tasks import (
     create_task,
     find_task,
+    heading_to_org_string,
     list_tasks,
     move_task,
+    parse_task_entry,
     search_tasks,
     update_task,
 )
@@ -20,6 +22,7 @@ from mcp_server.utils import format_simple_diff
 from tests.conftest import (
     TasksFileInfo,
     make_task,
+    make_tasks_org,
 )
 
 
@@ -970,3 +973,81 @@ This task is DONE but has no CLOSED timestamp.
         assert task.closed is None or task.closed == ""
         # Should have :MODIFIED: timestamp
         assert task.modified != ""
+
+
+class TestPropertyPreservation:
+    """
+    Tests that heading_to_org_string renders :PROPERTIES: and that update_task
+    preserves them even when the submitted entry omits the drawer.
+
+    Regression tests for the bug where :ID:, :CUSTOM_ID:, and :PROJECT:
+    were silently dropped on update because heading_to_org_string did not
+    emit the :PROPERTIES: drawer, so round-tripped entries never included it.
+    """
+
+    def test_heading_to_org_string_renders_properties_drawer(self) -> None:
+        """
+        GIVEN a heading parsed from an entry with a :PROPERTIES: drawer
+        WHEN heading_to_org_string is called
+        THEN the output contains :PROPERTIES:, each property, and :END:
+        """
+        entry = (
+            "** TODO Task with properties\n"
+            ":PROPERTIES:\n"
+            "   :ID:       AAAA-BBBB-CCCC-DDDD-EEEEFFFF0000\n"
+            "   :CUSTOM_ID: task-test\n"
+            "   :PROJECT:  project-myapp\n"
+            ":END:\n"
+            "\n"
+            "*** Description\n"
+            "Test description.\n"
+        )
+        heading = parse_task_entry(entry)
+        result = heading_to_org_string(heading)
+
+        assert ":PROPERTIES:" in result
+        assert ":END:" in result
+        assert "AAAA-BBBB-CCCC-DDDD-EEEEFFFF0000" in result
+        assert "task-test" in result
+        assert "project-myapp" in result
+
+    @pytest.mark.parametrize(
+        "prop,value",
+        [
+            ("ID", "DEAD-BEEF-1234-5678-ABCD-EF0123456789"),
+            ("CUSTOM_ID", "task-preserve-props"),
+            ("PROJECT", "project-myapp"),
+        ],
+    )
+    def test_update_preserves_property_when_entry_omits_it(
+        self, temp_org_dir: Path, prop: str, value: str
+    ) -> None:
+        """
+        GIVEN a task with :ID:, :CUSTOM_ID:, and :PROJECT: set
+        WHEN update_task is called with an entry that omits the :PROPERTIES: drawer
+        THEN each property should be preserved after the update
+        """
+        task_entry = (
+            "** TODO Task to test property preservation\n"
+            ":PROPERTIES:\n"
+            "   :ID:       DEAD-BEEF-1234-5678-ABCD-EF0123456789\n"
+            "   :CUSTOM_ID: task-preserve-props\n"
+            "   :PROJECT:  project-myapp\n"
+            ":END:\n"
+            "\n"
+            "*** Description\n"
+            "Original description.\n"
+        )
+        tasks_file = temp_org_dir / "tasks.org"
+        tasks_file.write_text(make_tasks_org([task_entry], []))
+
+        # Update with an entry that omits the :PROPERTIES: drawer entirely
+        minimal_update = (
+            "** TODO Task to test property preservation\n"
+            "*** Description\n"
+            "Updated description, no properties drawer.\n"
+        )
+        update_task("task-preserve-props", minimal_update)
+
+        _, heading, _, _ = find_task("task-preserve-props")
+        assert heading.properties.get(prop) == value

@@ -117,6 +117,13 @@ def find_section(org: Org, section_name: str) -> Heading | None:
 
 ###############################################################################
 #
+# Canonical property order for the :PROPERTIES: drawer.  Known properties are
+# written first in this order; any unrecognised extras follow alphabetically.
+_PROPERTY_ORDER = ("ID", "CUSTOM_ID", "CREATED", "MODIFIED", "CLOSED", "PROJECT")
+
+
+###############################################################################
+#
 def heading_to_org_string(heading: Heading) -> str:
     """
     Convert an orgmunge heading back to org-mode string format.
@@ -129,6 +136,9 @@ def heading_to_org_string(heading: Heading) -> str:
 
     Note:
         Recursively includes all child headings in the output.
+        Renders the :PROPERTIES: drawer when properties are present so that
+        callers (e.g. get_task) see the full task including CUSTOM_ID / ID /
+        PROJECT etc. and can round-trip them through update_task without loss.
     """
     lines = []
 
@@ -143,6 +153,24 @@ def heading_to_org_string(heading: Heading) -> str:
     tags = heading.headline.tags
     tags_str = f" :{':'.join(tags)}:" if tags else ""
     lines.append(f"{stars} {todo}{title}{tags_str}")
+
+    # Render :PROPERTIES: drawer immediately after the headline
+    props: dict = (
+        heading.properties
+        if hasattr(heading, "properties") and heading.properties
+        else {}
+    )
+    if props:
+        lines.append(":PROPERTIES:")
+        rendered: set[str] = set()
+        for prop in _PROPERTY_ORDER:
+            if prop in props:
+                lines.append(f"   :{prop}: {props[prop]}")
+                rendered.add(prop)
+        for prop in sorted(props.keys()):
+            if prop not in rendered:
+                lines.append(f"   :{prop}: {props[prop]}")
+        lines.append(":END:")
 
     # Add body if present
     if heading.body:
@@ -615,8 +643,14 @@ def update_task(
     #
     new_task.properties["MODIFIED"] = get_current_timestamp(active=False)
 
-    if task.created and "CREATED" not in new_task.properties:
-        new_task.properties["CREATED"] = task.created
+    # Preserve all properties from the old task that the incoming entry omitted.
+    # This covers :ID:, :CUSTOM_ID:, :CREATED:, :PROJECT:, and any future
+    # custom properties.  :MODIFIED: and :CLOSED: are excluded here because
+    # they are managed explicitly below.
+    auto_managed = {"MODIFIED", "CLOSED"}
+    for prop, val in old_heading.properties.items():
+        if prop not in auto_managed and prop not in new_task.properties:
+            new_task.properties[prop] = val
 
     # Handle CLOSED property based on status transitions
     # TODO -> DONE: set :CLOSED:
@@ -661,8 +695,9 @@ def update_task(
         new_status = new_task.headline.todo
         # Re-apply automatic properties
         new_task.properties["MODIFIED"] = get_current_timestamp(active=False)
-        if task.created and "CREATED" not in new_task.properties:
-            new_task.properties["CREATED"] = task.created
+        for prop, val in old_heading.properties.items():
+            if prop not in auto_managed and prop not in new_task.properties:
+                new_task.properties[prop] = val
 
         # Handle CLOSED property based on status transitions
         if old_status == "TODO" and new_status == "DONE":
