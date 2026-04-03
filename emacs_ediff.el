@@ -99,7 +99,8 @@ This runs after ediff has set up its buffers."
   "Fill paragraphs in FILE, skipping blocks that must not be wrapped.
 Visits FILE in org-mode and calls `fill-region' on each contiguous
 region of plain content, skipping:
-  - #+begin_src...#+end_src blocks (org-fill-paragraph hangs in them)
+  - #+begin_*...#+end_* blocks of any kind (src, example, quote, verse,
+    export, comment, dynamic blocks, etc.)
   - :DRAWER:...:END: blocks (property/logbook drawers — structural, not prose)
 
 Additionally, list items whose content begins with an org bracket link
@@ -126,7 +127,7 @@ since inserting newlines inside or before a link corrupts the syntax."
                 (append fill-nobreak-predicate (list link-list-nobreak))))
           (goto-char (point-min))
           (while (re-search-forward
-                  "^[ \t]*\\(#\\+begin_src\\|:[[:alpha:]_]+:\\)"
+                  "^[ \t]*\\(#\\+begin_[[:alnum:]_]+\\|:[[:alpha:]_]+:\\)"
                   nil t)
             (let ((block-start (match-beginning 0))
                   (keyword (match-string 1)))
@@ -135,7 +136,7 @@ since inserting newlines inside or before a link corrupts the syntax."
                 (fill-region fill-start block-start))
               ;; Find the matching closing marker
               (let ((end-re (if (string-prefix-p "#+" keyword)
-                                "^[ \t]*#\\+end_src"
+                                "^[ \t]*#\\+end_[[:alnum:]_]+"
                               "^[ \t]*:END:")))
                 (if (re-search-forward end-re nil t)
                     (setq fill-start (line-beginning-position 2))
