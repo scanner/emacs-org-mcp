@@ -99,9 +99,15 @@ This runs after ediff has set up its buffers."
   "Fill paragraphs in FILE, skipping blocks that must not be wrapped.
 Visits FILE in org-mode and calls `fill-region' on each contiguous
 region of plain content, skipping:
+  - Org headings (lines starting with one or more * followed by a space)
   - #+begin_*...#+end_* blocks of any kind (src, example, quote, verse,
     export, comment, dynamic blocks, etc.)
-  - :DRAWER:...:END: blocks (property/logbook drawers — structural, not prose)
+  - :DRAWER:...:END: blocks (property/logbook drawers -- structural, not prose)
+
+Headings must not be wrapped because org-mode treats the heading line as a
+single structural unit.  Wrapping a long heading inserts a continuation line
+between the heading and its :PROPERTIES: drawer, which confuses orgmunge on
+the next update and causes a duplicate properties drawer to be inserted.
 
 Additionally, list items whose content begins with an org bracket link
 ([[...][...]]) are protected from line-breaking via `fill-nobreak-predicate',
@@ -127,21 +133,25 @@ since inserting newlines inside or before a link corrupts the syntax."
                 (append fill-nobreak-predicate (list link-list-nobreak))))
           (goto-char (point-min))
           (while (re-search-forward
-                  "^[ \t]*\\(#\\+begin_[[:alnum:]_]+\\|:[[:alpha:]_]+:\\)"
+                  "^\\(\\*+[ \t]\\|[ \t]*#\\+begin_[[:alnum:]_]+\\|[ \t]*:[[:alpha:]_]+:\\)"
                   nil t)
             (let ((block-start (match-beginning 0))
                   (keyword (match-string 1)))
               ;; Fill prose content before this block
               (when (< fill-start block-start)
                 (fill-region fill-start block-start))
-              ;; Find the matching closing marker
-              (let ((end-re (if (string-prefix-p "#+" keyword)
-                                "^[ \t]*#\\+end_[[:alnum:]_]+"
-                              "^[ \t]*:END:")))
-                (if (re-search-forward end-re nil t)
-                    (setq fill-start (line-beginning-position 2))
-                  ;; No closing marker found — skip to end of buffer
-                  (setq fill-start (point-max))))))
+              ;; Find the matching closing marker, or skip just this line for
+              ;; headings (which have no closing marker).
+              (if (string-match-p "^\\*" keyword)
+                  ;; Heading -- no end marker, skip just this one line
+                  (setq fill-start (line-beginning-position 2))
+                (let ((end-re (if (string-prefix-p "#+" keyword)
+                                  "^[ \t]*#\\+end_[[:alnum:]_]+"
+                                "^[ \t]*:END:")))
+                  (if (re-search-forward end-re nil t)
+                      (setq fill-start (line-beginning-position 2))
+                    ;; No closing marker found -- skip to end of buffer
+                    (setq fill-start (point-max)))))))
           ;; Fill any remaining prose after the last skipped block
           (when (< fill-start (point-max))
             (fill-region fill-start (point-max)))))
