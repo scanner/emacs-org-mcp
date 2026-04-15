@@ -119,7 +119,14 @@ def find_section(org: Org, section_name: str) -> Heading | None:
 #
 # Canonical property order for the :PROPERTIES: drawer.  Known properties are
 # written first in this order; any unrecognised extras follow alphabetically.
-_PROPERTY_ORDER = ("ID", "CUSTOM_ID", "CREATED", "MODIFIED", "CLOSED", "PROJECT")
+_PROPERTY_ORDER = (
+    "ID",
+    "CUSTOM_ID",
+    "CREATED",
+    "MODIFIED",
+    "CLOSED",
+    "PROJECT",
+)
 
 
 ###############################################################################
