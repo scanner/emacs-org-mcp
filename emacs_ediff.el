@@ -103,11 +103,18 @@ region of plain content, skipping:
   - #+begin_*...#+end_* blocks of any kind (src, example, quote, verse,
     export, comment, dynamic blocks, etc.)
   - :DRAWER:...:END: blocks (property/logbook drawers -- structural, not prose)
+  - Org tables (contiguous lines starting with `|', including separator
+    rows like `|---+---|').  Tables have no explicit end marker, so the
+    skip runs until the first line that does not start with `|'.
 
 Headings must not be wrapped because org-mode treats the heading line as a
 single structural unit.  Wrapping a long heading inserts a continuation line
 between the heading and its :PROPERTIES: drawer, which confuses orgmunge on
 the next update and causes a duplicate properties drawer to be inserted.
+
+Tables must not be wrapped because fill-region would break table rows across
+lines, destroying the column alignment and org's ability to recognize the
+structure on the next parse.
 
 Additionally, list items whose content begins with an org bracket link
 ([[...][...]]) are protected from line-breaking via `fill-nobreak-predicate',
@@ -133,25 +140,38 @@ since inserting newlines inside or before a link corrupts the syntax."
                 (append fill-nobreak-predicate (list link-list-nobreak))))
           (goto-char (point-min))
           (while (re-search-forward
-                  "^\\(\\*+[ \t]\\|[ \t]*#\\+begin_[[:alnum:]_]+\\|[ \t]*:[[:alpha:]_]+:\\)"
+                  "^\\(\\*+[ \t]\\|[ \t]*#\\+begin_[[:alnum:]_]+\\|[ \t]*:[[:alpha:]_]+:\\|[ \t]*|\\)"
                   nil t)
             (let ((block-start (match-beginning 0))
                   (keyword (match-string 1)))
               ;; Fill prose content before this block
               (when (< fill-start block-start)
                 (fill-region fill-start block-start))
-              ;; Find the matching closing marker, or skip just this line for
-              ;; headings (which have no closing marker).
-              (if (string-match-p "^\\*" keyword)
-                  ;; Heading -- no end marker, skip just this one line
-                  (setq fill-start (line-beginning-position 2))
-                (let ((end-re (if (string-prefix-p "#+" keyword)
+              (cond
+               ;; Heading -- no end marker, skip just this one line
+               ((string-match-p "^\\*" keyword)
+                (setq fill-start (line-beginning-position 2)))
+               ;; Table -- no explicit end marker; skip contiguous lines
+               ;; that start with `|' (including separator rows like
+               ;; `|---+---|').  The table ends at the first line that
+               ;; does not start with `|'.
+               ((string-match-p "^[ \t]*|" keyword)
+                (forward-line 1)
+                (while (and (not (eobp))
+                            (save-excursion
+                              (beginning-of-line)
+                              (looking-at-p "[ \t]*|")))
+                  (forward-line 1))
+                (setq fill-start (point)))
+               ;; #+begin_*...#+end_* block or :DRAWER:...:END: drawer
+               (t
+                (let ((end-re (if (string-match-p "#\\+" keyword)
                                   "^[ \t]*#\\+end_[[:alnum:]_]+"
                                 "^[ \t]*:END:")))
                   (if (re-search-forward end-re nil t)
                       (setq fill-start (line-beginning-position 2))
                     ;; No closing marker found -- skip to end of buffer
-                    (setq fill-start (point-max)))))))
+                    (setq fill-start (point-max))))))))
           ;; Fill any remaining prose after the last skipped block
           (when (< fill-start (point-max))
             (fill-region fill-start (point-max)))))
