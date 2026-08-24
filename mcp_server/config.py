@@ -36,6 +36,7 @@ class Config:
     projects_dir: Path = Path.home() / "org" / "projects"
     emacsclient_path: Path = Path("/usr/local/bin/emacsclient")
     ediff_approval: bool = True
+    git_autocommit: bool = True
     active_section: str = "Tasks"
     completed_section: str = "Completed Tasks"
     high_level_section: str = "High Level Tasks (in order)"
@@ -67,6 +68,7 @@ ENV_VAR_TO_CONFIG = {
     "PROJECTS_DIR": "projects_dir",
     "EMACSCLIENT_PATH": "emacsclient_path",
     "EMACS_EDIFF_APPROVAL": "ediff_approval",
+    "GIT_AUTOCOMMIT": "git_autocommit",
     "ACTIVE_SECTION": "active_section",
     "COMPLETED_SECTION": "completed_section",
     "HIGH_LEVEL_SECTION": "high_level_section",
@@ -80,6 +82,8 @@ CLI_ARG_TO_CONFIG = {
     "--emacsclient-path": "emacsclient_path",
     "--ediff-approval": "ediff_approval",
     "--no-ediff-approval": "ediff_approval",
+    "--git-autocommit": "git_autocommit",
+    "--no-git-autocommit": "git_autocommit",
     "--active-section": "active_section",
     "--completed-section": "completed_section",
     "--high-level-section": "high_level_section",
@@ -138,7 +142,10 @@ def load_config(args: dict[str, str | bool | None]) -> Config:
                 case builtins.bool:
                     # Boolean flags are directly True/False from docopt
                     # Special handling: --no-ediff-approval inverts the value
-                    if cli_arg == "--no-ediff-approval":
+                    if cli_arg in (
+                        "--no-ediff-approval",
+                        "--no-git-autocommit",
+                    ):
                         config_map[config_field] = not bool(cli_value)
                     else:
                         config_map[config_field] = bool(cli_value)

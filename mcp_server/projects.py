@@ -557,7 +557,7 @@ def regenerate_project_index() -> None:
         lines.append("")
 
     index_path = projects_dir / "index.org"
-    write_file(index_path, "\n".join(lines))
+    write_file(index_path, "\n".join(lines), summary="regenerate project index")
 
 
 # =============================================================================
@@ -770,7 +770,7 @@ def create_project(project_entry: str) -> tuple[str, str]:
     # Ensure projects directory exists
     projects_dir.mkdir(parents=True, exist_ok=True)
 
-    write_file(file_path, final_content)
+    write_file(file_path, final_content, summary=f"create project {slug}")
     regenerate_project_index()
 
     return slug, final_content
@@ -877,7 +877,11 @@ def update_project(
 
     # Write with backup
     backup_path = backup_file(project.file_path)
-    write_file(project.file_path, new_content)
+    write_file(
+        project.file_path,
+        new_content,
+        summary=f"update project {project.slug}",
+    )
     if backup_path and backup_path.exists():
         backup_path.unlink()
 
@@ -961,7 +965,11 @@ def link_task_to_project(project_identifier: str, task_link: str) -> str:
         new_content = result_content
 
     backup_path = backup_file(project.file_path)
-    write_file(project.file_path, new_content)
+    write_file(
+        project.file_path,
+        new_content,
+        summary=f"link task to project {project.slug}",
+    )
     if backup_path and backup_path.exists():
         backup_path.unlink()
 

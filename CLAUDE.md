@@ -80,6 +80,7 @@ emacs-task-journal-mcp/
 │   ├── journal.py         # Journal CRUD (manual parsing)
 │   ├── projects.py        # Project CRUD (manual parsing)
 │   ├── validation.py      # Heading-level validation, block escaping
+│   ├── versioning.py      # Git auto-commit of org file changes
 │   └── utils.py           # Timestamps, atomic file I/O, ediff bridge
 ├── resources/guides/      # MCP resource guide files
 │   ├── task-format.md
@@ -95,7 +96,8 @@ emacs-task-journal-mcp/
     ├── test_resources.py
     ├── test_task_integrity.py  # Data-loss regression tests
     ├── test_tasks.py
-    └── test_validation.py
+    ├── test_validation.py
+    └── test_versioning.py
 ```
 
 ## Key Design Decisions
@@ -173,6 +175,31 @@ such lines (`,* Tasks`), which is what Emacs itself does.
   the parser. `list_tasks` output and `find_task` "not found" errors surface
   these rather than silently omitting them.
 
+### Git Versioning (`mcp_server/versioning.py`)
+
+Every org write is committed to that file's own git repository, so history is a
+record of what changed and when. This is what turns a bad write from an
+incident into a `git revert`.
+
+Rules, in priority order:
+
+1. **Versioning never breaks an org operation.** By the time it runs the file is
+   already written. Not a repo, no git, a held `index.lock`, a rebase in
+   progress — all logged and shrugged off.
+2. **Only the touched file is committed.** Uses `repo.git.commit(... "--", path)`
+   — a pathspec commit — *not* `repo.index.commit()`, which would sweep up
+   whatever the user happened to have staged.
+3. **We never create a repository.** No repo means no-op.
+
+Because a pathspec commit takes the file's working-tree content, edits made
+outside the server are swept into the next commit. That is intentional: no
+version goes unrecorded, even when the server did not make the change.
+
+Hooked into `write_file()` so no CRUD path can forget it; callers opt in by
+passing a `summary`, which becomes `emacs-org-mcp: <summary>`. Backups are
+added to the repo's `.gitignore` — they sit next to the file they protect,
+which in a synced org directory would otherwise replicate everywhere.
+
 ### Ediff Approval (Enabled by Default)
 
 By default, create/update operations present changes in Emacs ediff before applying them:
@@ -231,6 +258,7 @@ All settings can be overridden via environment variables or command-line flags:
 | `COMPLETED_SECTION` / `--completed-section` | `Completed Tasks` | Section name for completed/DONE tasks |
 | `HIGH_LEVEL_SECTION` / `--high-level-section` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
 | `EMACS_EDIFF_APPROVAL` / `--ediff-approval` / `--no-ediff-approval` | `true` | Visual approval via Emacs ediff (enabled by default, use `false` or `--no-ediff-approval` to disable) |
+| `GIT_AUTOCOMMIT` / `--git-autocommit` / `--no-git-autocommit` | `true` | Commit each org file change to git (no-op if the org directory is not a repo) |
 | `EMACSCLIENT_PATH` / `--emacsclient-path` | _(searches PATH)_ | Custom path to `emacsclient` executable (optional) |
 
 ## Task Format Reference

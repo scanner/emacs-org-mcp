@@ -313,7 +313,7 @@ class TestWriteGuard:
         section.remove_child(list(section.children)[-1])
 
         with pytest.raises(ValueError, match="task-follower"):
-            write_tasks_org(org)
+            write_tasks_org(org, summary="test")
 
         assert big_then_ordinary.read_text() == original
 
@@ -333,7 +333,7 @@ class TestWriteGuard:
         section = find_section(org, "Tasks")
         section.remove_child(list(section.children)[-1])
 
-        write_tasks_org(org, target="task-follower")
+        write_tasks_org(org, summary="test", target="task-follower")
 
         assert [t.custom_id for t in list_tasks("Tasks")] == ["task-big"]
 

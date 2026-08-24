@@ -13,6 +13,7 @@ from pathlib import Path
 
 # project imports
 from mcp_server.config import global_state, logger
+from mcp_server.versioning import commit_file, ensure_backups_ignored
 
 # =============================================================================
 # Timestamp Utilities
@@ -122,15 +123,21 @@ def format_simple_diff(old_content: str, new_content: str) -> str:
 
 ###############################################################################
 #
-def write_file(path: Path, content: str) -> None:
+def write_file(path: Path, content: str, summary: str | None = None) -> None:
     """
     Write content to file atomically, ensuring it ends with newline.
 
     Args:
         path: Path to write to
         content: Content to write
+        summary: Short description of the change for the git commit message,
+            e.g. "update task task-gh-28".  When omitted the file is written
+            but not committed.
 
     Note:
+        Committing is done here rather than at the individual CRUD sites so
+        that no write path can forget it.  It is best effort and never raises:
+        see :mod:`mcp_server.versioning`.
         Creates parent directories if they don't exist.
         Automatically adds trailing newline if not present.
         The previous contents are retained as ``<name>.bak`` so a bad write is
@@ -162,6 +169,10 @@ def write_file(path: Path, content: str) -> None:
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
+
+    if summary is not None:
+        ensure_backups_ignored(path)
+        commit_file(path, summary)
 
 
 ###############################################################################

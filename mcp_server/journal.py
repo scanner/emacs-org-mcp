@@ -281,7 +281,11 @@ def create_journal_entry(
         new_content = f"{date_heading}\n\n{final_entry_text}"
 
     backup_path = backup_file(file_path)
-    write_file(file_path, new_content)
+    write_file(
+        file_path,
+        new_content,
+        summary=f"create journal entry {target_date.isoformat()} {time_str}",
+    )
 
     # Remove backup after successful write
     if backup_path != file_path and backup_path.exists():
@@ -437,7 +441,11 @@ def update_journal_entry(
     new_lines = lines[:entry_start] + new_entry_lines + lines[entry_end:]
 
     backup_path = backup_file(file_path)
-    write_file(file_path, "\n".join(new_lines))
+    write_file(
+        file_path,
+        "\n".join(new_lines),
+        summary=f"update journal entry {date_str} {time_str}",
+    )
 
     # Remove backup after successful write
     if backup_path != file_path and backup_path.exists():

@@ -155,6 +155,7 @@ All settings can be overridden via environment variables or command-line flags:
 | `COMPLETED_SECTION` / `--completed-section` | `Completed Tasks` | Section name for completed/DONE tasks |
 | `HIGH_LEVEL_SECTION` / `--high-level-section` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
 | `EMACS_EDIFF_APPROVAL` / `--ediff-approval` / `--no-ediff-approval` | `true` | Visual approval via Emacs ediff |
+| `GIT_AUTOCOMMIT` / `--git-autocommit` / `--no-git-autocommit` | `true` | Commit each org file change to git, when the org directory is already a repo |
 | `EMACSCLIENT_PATH` / `--emacsclient-path` | _(searches PATH)_ | Custom path to `emacsclient` (optional) |
 
 ## Ediff Approval

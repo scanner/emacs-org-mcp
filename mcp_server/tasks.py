@@ -274,12 +274,13 @@ def scan_task_identities(file_content: str) -> list[str]:
 
 ###############################################################################
 #
-def write_tasks_org(org: Org, target: str | None = None) -> None:
+def write_tasks_org(org: Org, summary: str, target: str | None = None) -> None:
     """
     Serialise and write the tasks file, refusing writes that lose a task.
 
     Args:
         org: The Org object to write
+        summary: Short description of the change for the git commit message
         target: Identity (``:CUSTOM_ID:`` or ``headline:<text>``) of the one
             task this operation is allowed to remove or rename.  ``None`` means
             the operation must not remove any task at all.
@@ -318,7 +319,7 @@ def write_tasks_org(org: Org, target: str | None = None) -> None:
             f"and retry, or inspect the file directly."
         )
 
-    write_file(tasks_file, new_content)
+    write_file(tasks_file, new_content, summary=summary)
 
 
 ###############################################################################
@@ -731,7 +732,7 @@ def create_task(section_name: str, task_entry: str) -> tuple[str, str]:
         add_high_level_task(org, description)
 
     # A create must not remove anything, so no task is exempt from the guard.
-    write_tasks_org(org)
+    write_tasks_org(org, summary=f"create task {custom_id}")
 
     # Return section and the task content for formatting
     return (section_name, heading_to_org_string(new_task))
@@ -898,7 +899,12 @@ def update_task(
     # The target task is the only one allowed to change identity here: its
     # replacement carries the same :CUSTOM_ID:, so it should still be present
     # afterwards, but exempt it so a deliberate rename cannot trip the guard.
-    write_tasks_org(org, target=task.custom_id or f"headline:{task.headline}")
+    identity = task.custom_id or f"headline:{task.headline}"
+    write_tasks_org(
+        org,
+        summary=f"update task {task.custom_id or task.headline}",
+        target=identity,
+    )
 
     new_content = heading_to_org_string(new_task)
 
@@ -941,7 +947,12 @@ def move_task(
     target_section.add_child(heading, new=True)
 
     # A move relocates a task but must not remove one, so nothing is exempt.
-    write_tasks_org(org)
+    write_tasks_org(
+        org,
+        summary=(
+            f"move task {task.custom_id or task.headline} to {to_section}"
+        ),
+    )
 
     return (task.headline, from_section, to_section)
 
