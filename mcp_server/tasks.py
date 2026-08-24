@@ -18,6 +18,13 @@ from mcp_server.utils import (
     format_simple_diff,
     get_current_timestamp,
     request_ediff_approval,
+    write_file,
+)
+from mcp_server.validation import (
+    HEADING_RE,
+    find_indented_headings,
+    scan_headings,
+    validate_task_entry,
 )
 
 # =============================================================================
@@ -208,6 +215,112 @@ def _properties(heading: Heading) -> SimpleNamespace:
     return properties
 
 
+# =============================================================================
+# Destructive-Write Guard
+# =============================================================================
+
+
+###############################################################################
+#
+def scan_task_identities(file_content: str) -> list[str]:
+    """
+    List every task in a tasks.org file by scanning the raw text.
+
+    Args:
+        file_content: Full text of a tasks.org file
+
+    Returns:
+        Identities in file order.  A task is identified by its ``:CUSTOM_ID:``
+        when it has one, otherwise by ``headline:<text>``.
+
+    Note:
+        This deliberately does NOT go through orgmunge.  It is the ground truth
+        the parser is checked against: any level-2 heading carrying a TODO/DONE
+        keyword is a task, wherever it sits in the tree.  That is what makes it
+        able to notice tasks the parser has lost track of.
+
+        Indented headings are counted too.  Org treats " ** TODO Task" as body
+        text and folds it into the preceding task, but it is unmistakably a
+        task the user still has, so it must be protected from deletion like any
+        other.
+    """
+    lines = file_content.split("\n")
+    identities: list[str] = []
+
+    found = scan_headings(file_content) + find_indented_headings(file_content)
+
+    for heading in sorted(found, key=lambda h: h.line_number):
+        if heading.level != 2:
+            continue
+
+        keyword, _, rest = heading.text.partition(" ")
+        if keyword not in ALL_STATES:
+            continue
+
+        # Walk the :PROPERTIES: drawer that follows the heading, if any.
+        custom_id = ""
+        for line in lines[heading.line_number : heading.line_number + 20]:
+            stripped = line.strip()
+            if stripped == ":END:" or HEADING_RE.match(line):
+                break
+            if stripped.upper().startswith(":CUSTOM_ID:"):
+                custom_id = stripped.split(":", 2)[2].strip()
+                break
+
+        identities.append(custom_id or f"headline:{rest.strip()}")
+
+    return identities
+
+
+###############################################################################
+#
+def write_tasks_org(org: Org, target: str | None = None) -> None:
+    """
+    Serialise and write the tasks file, refusing writes that lose a task.
+
+    Args:
+        org: The Org object to write
+        target: Identity (``:CUSTOM_ID:`` or ``headline:<text>``) of the one
+            task this operation is allowed to remove or rename.  ``None`` means
+            the operation must not remove any task at all.
+
+    Raises:
+        ValueError: If any task other than ``target`` would disappear.  The
+            file is left untouched.
+
+    Note:
+        This is the backstop for the whole module.  Whatever else goes wrong --
+        a parser that loses a heading, a bad rewrite, a malformed entry that
+        slipped past validation -- no write may ever delete a task the caller
+        did not name.  Correctness here does not depend on knowing *why* a task
+        went missing, only that it did.
+    """
+    tasks_file = global_state.config.tasks_file
+    new_content = str(org)
+
+    before = (
+        scan_task_identities(tasks_file.read_text(encoding="utf-8"))
+        if tasks_file.exists()
+        else []
+    )
+    after = scan_task_identities(new_content)
+
+    allowed = {target} if target else set()
+    vanished = [i for i in before if i not in set(after) and i not in allowed]
+
+    if vanished:
+        lost = "\n".join(f"  - {identity}" for identity in vanished)
+        raise ValueError(
+            f"Refusing to write {tasks_file}: the operation would remove "
+            f"{len(vanished)} task(s) it was not asked to touch:\n\n{lost}\n\n"
+            f"The file has been left unchanged. This usually means the org "
+            f"parser lost track of a heading; re-read the task with get_task "
+            f"and retry, or inspect the file directly."
+        )
+
+    write_file(tasks_file, new_content)
+
+
 ###############################################################################
 #
 def parse_tasks_in_section(
@@ -353,9 +466,13 @@ def find_task(
                 result = (task, heading, section_heading, org)
                 return result
 
-    raise ValueError(
-        f"Could not find task '{identifier}' in section '{section}'"
-    )
+    # Before reporting a plain "not found", check whether the file contains
+    # tasks the parser cannot see -- that is a very different problem and the
+    # caller needs to know it rather than assume the task never existed.
+    message = f"Could not find task '{identifier}' in section '{section}'"
+    if unparsed := find_unparsed_tasks():
+        message += "\n" + "\n".join(format_unparsed_warning(unparsed))
+    raise ValueError(message)
 
 
 ###############################################################################
@@ -393,7 +510,14 @@ def parse_task_entry(task_entry: str) -> Heading:
     Note:
         Wraps task in a dummy level 1 section for parsing since orgmunge
         requires org content to start with a level 1 heading.
+
+        Validation happens here rather than in the tool layer so that every
+        path into the parser is covered.  orgmunge silently keeps only the
+        first level-2 heading, so an unvalidated entry with a stray sibling
+        loses everything after it while still reporting success.
     """
+    task_entry = validate_task_entry(task_entry)
+
     # Wrap in a dummy level-1 section so orgmunge can parse it
     wrapped = f"* _temp_section_\n{task_entry}\n"
     temp_org = Org(wrapped, from_file=False)
@@ -606,7 +730,8 @@ def create_task(section_name: str, task_entry: str) -> tuple[str, str]:
         description = extract_task_description(headline_title)
         add_high_level_task(org, description)
 
-    org.write(str(global_state.config.tasks_file))
+    # A create must not remove anything, so no task is exempt from the guard.
+    write_tasks_org(org)
 
     # Return section and the task content for formatting
     return (section_name, heading_to_org_string(new_task))
@@ -770,7 +895,10 @@ def update_task(
             # Mark as incomplete in checklist
             update_high_level_task(org, description, completed=False)
 
-    org.write(str(global_state.config.tasks_file))
+    # The target task is the only one allowed to change identity here: its
+    # replacement carries the same :CUSTOM_ID:, so it should still be present
+    # afterwards, but exempt it so a deliberate rename cannot trip the guard.
+    write_tasks_org(org, target=task.custom_id or f"headline:{task.headline}")
 
     new_content = heading_to_org_string(new_task)
 
@@ -811,7 +939,9 @@ def move_task(
 
     old_section.remove_child(heading)
     target_section.add_child(heading, new=True)
-    org.write(str(global_state.config.tasks_file))
+
+    # A move relocates a task but must not remove one, so nothing is exempt.
+    write_tasks_org(org)
 
     return (task.headline, from_section, to_section)
 
@@ -907,6 +1037,67 @@ def format_task_create_result(section: str, task_content: str) -> str:
 
 ###############################################################################
 #
+def find_unparsed_tasks() -> list[str]:
+    """
+    List tasks present in tasks.org that the org parser does not see.
+
+    Returns:
+        Identities (``:CUSTOM_ID:`` or ``headline:<text>``) of tasks found by
+        scanning the raw file but absent from every parsed section.
+
+    Note:
+        A non-empty result means the file is structurally confusing the parser
+        -- typically a stray heading that has re-parented everything after it.
+        Those tasks are invisible to get_task and list_tasks, which is how a
+        task can appear to have vanished while still being in the file.
+    """
+    tasks_file = global_state.config.tasks_file
+    if not tasks_file.exists():
+        return []
+
+    in_file = scan_task_identities(tasks_file.read_text(encoding="utf-8"))
+
+    parsed: set[str] = set()
+    for section_name in (
+        global_state.config.active_section,
+        global_state.config.completed_section,
+    ):
+        for task in list_tasks(section_name):
+            parsed.add(task.custom_id or f"headline:{task.headline}")
+
+    return [identity for identity in in_file if identity not in parsed]
+
+
+###############################################################################
+#
+def format_unparsed_warning(unparsed: list[str]) -> list[str]:
+    """
+    Render a warning block for tasks the parser cannot see.
+
+    Args:
+        unparsed: Identities returned by :func:`find_unparsed_tasks`
+
+    Returns:
+        Lines to append to tool output, or an empty list if nothing is wrong.
+    """
+    if not unparsed:
+        return []
+
+    lines = [
+        "",
+        f"⚠ WARNING: {len(unparsed)} task(s) exist in the file but are not "
+        "visible to the parser:",
+    ]
+    lines.extend(f"    {identity}" for identity in unparsed)
+    lines.append(
+        "  They cannot be found or updated until the file structure is "
+        "repaired -- look for a stray heading that has re-parented them."
+    )
+    return lines
+
+
+###############################################################################
+#
 def format_task_list(tasks: list[Task], section: str) -> str:
     """
     Format a list of tasks for display.
@@ -916,10 +1107,13 @@ def format_task_list(tasks: list[Task], section: str) -> str:
         section: Section name for the header
 
     Returns:
-        Formatted task list with section header and task summaries
+        Formatted task list with section header and task summaries, plus a
+        warning if the file contains tasks the parser cannot see.
     """
+    warning = format_unparsed_warning(find_unparsed_tasks())
+
     if not tasks:
-        return f"No tasks in {section}"
+        return "\n".join([f"No tasks in {section}", *warning])
 
     lines = [f"{section}", "=" * len(section), ""]
 
@@ -927,6 +1121,8 @@ def format_task_list(tasks: list[Task], section: str) -> str:
         ticket = f"[{task.ticket_id}] " if task.ticket_id else ""
         name_info = f" (#{task.custom_id})" if task.custom_id else ""
         lines.append(f"  {task.status}  {ticket}{task.headline}{name_info}")
+
+    lines.extend(warning)
 
     return "\n".join(lines)
 

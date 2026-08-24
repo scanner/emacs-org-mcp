@@ -69,9 +69,18 @@ emacs-task-journal-mcp/
 ├── README.md              # User documentation
 ├── pyproject.toml         # uv/Python project config
 ├── uv.lock                # Lock file
-├── server.py              # Main MCP server implementation
+├── server.py              # Entry point
 ├── emacs_ediff.el         # Emacs Lisp for ediff approval workflow
 ├── manual_test_ediff.py   # Manual test script for ediff approval
+├── mcp_server/            # Server implementation
+│   ├── config.py          # Config dataclass and global state
+│   ├── tools.py           # MCP tool definitions and dispatch
+│   ├── resources.py       # MCP resource definitions and guide loading
+│   ├── tasks.py           # Task CRUD, orgmunge ops, write guard
+│   ├── journal.py         # Journal CRUD (manual parsing)
+│   ├── projects.py        # Project CRUD (manual parsing)
+│   ├── validation.py      # Heading-level validation, block escaping
+│   └── utils.py           # Timestamps, atomic file I/O, ediff bridge
 ├── resources/guides/      # MCP resource guide files
 │   ├── task-format.md
 │   ├── journal-format.md
@@ -79,10 +88,14 @@ emacs-task-journal-mcp/
 └── tests/
     ├── conftest.py        # Shared fixtures and factories
     ├── test_config.py
+    ├── test_ediff.py
+    ├── test_factories.py
     ├── test_journal.py
     ├── test_projects.py
     ├── test_resources.py
-    └── test_tasks.py
+    ├── test_task_integrity.py  # Data-loss regression tests
+    ├── test_tasks.py
+    └── test_validation.py
 ```
 
 ## Key Design Decisions
@@ -110,6 +123,55 @@ The `create_task` and `update_task` tools accept `task_entry` as a complete org-
 ### Automatic Section Movement
 
 When `update_task` is called and the TODO state changes (e.g., `TODO` → `DONE`), the task automatically moves to the appropriate section (Active → Completed or vice versa).
+
+### Structural Validation (`mcp_server/validation.py`)
+
+Every document has a fixed root level and all topics must nest below it:
+
+| Document | Root | Topics must be |
+|----------|------|----------------|
+| Task | `**` | `***` or deeper |
+| Journal entry | `**` | `***` or deeper |
+| Project file | `*` | `**` or deeper |
+
+Submitted content that breaks this is **rejected** with a message naming the
+offending line and its corrected form. This is a data-loss guard, not style
+enforcement: orgmunge keeps only the first `**` heading of a task entry, so a
+stray sibling silently discarded everything after it while reporting success.
+
+Validation runs in `parse_task_entry`, `create_journal_entry`,
+`update_journal_entry`, `create_project`, and `update_project` — the parser
+boundary, so no tool path can bypass it.
+
+Two distinct corruptions hide a task from the org parser. Both are guarded
+against, and both have regression tests in `tests/test_task_integrity.py`:
+
+**Indented heading** (root cause of the 2026-08-23 data loss). A single leading
+space turns `** TODO Task` into body text, so org folds the whole task —
+drawer, subsections and all — into the *preceding* task's subtree. This
+reproduces every reported symptom: `get_task` cannot find it, `list_tasks`
+omits it positionally, and `search_tasks` for text unique to its body returns
+the task *before* it. A full-replacement `update_task` on that preceding task
+then overwrites the absorbed region and the task is destroyed.
+`find_indented_headings()` detects these; note it requires **two or more**
+stars, since a lone indented `*` is a legitimate org list bullet.
+
+**Phantom heading.** orgmunge does not exempt `#+begin_src`/`#+begin_example`
+blocks — a `* Tasks` line inside a block parses as a real level-1 heading and
+re-parents every task after it. `escape_headings_in_blocks()` comma-escapes
+such lines (`,* Tasks`), which is what Emacs itself does.
+
+### Write Integrity Guarantees (`mcp_server/tasks.py`)
+
+- `write_tasks_org()` wraps every write to `tasks.org`. It scans the raw text
+  before and after (via `scan_task_identities()`, deliberately **not** using
+  orgmunge) and refuses the write if any task other than the named `target`
+  would disappear. This holds regardless of *why* a task went missing.
+- `write_file()` writes via temp file + atomic rename and retains the previous
+  version as `<name>.bak`, so recovery never depends on an Emacs autosave.
+- `find_unparsed_tasks()` reports tasks present in the file but invisible to
+  the parser. `list_tasks` output and `find_task` "not found" errors surface
+  these rather than silently omitting them.
 
 ### Ediff Approval (Enabled by Default)
 
@@ -342,6 +404,10 @@ Expected behavior:
 - No support for scheduled/deadline timestamps in parsing (preserved in content)
 - Journal files use manual parsing, not orgmunge
 - No concurrent access protection (relies on single-user access pattern)
+- orgmunge does not honour `#+begin_src`/`#+begin_example` fencing; the server
+  works around it by comma-escaping heading-like lines inside blocks on write,
+  but org content written to these files by other means can still confuse the
+  parser (`find_unparsed_tasks()` will report it)
 
 ## Related Files
 

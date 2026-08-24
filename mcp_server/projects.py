@@ -17,6 +17,10 @@ from mcp_server.utils import (
     request_ediff_approval,
     write_file,
 )
+from mcp_server.validation import (
+    validate_project_entry,
+    validate_project_section_content,
+)
 
 # =============================================================================
 # Constants
@@ -659,6 +663,10 @@ def create_project(project_entry: str) -> tuple[str, str]:
     """
     projects_dir = global_state.config.projects_dir
 
+    # Reject a second level-1 heading before parsing: only the first is ever
+    # read back, so anything after it would be silently unreachable.
+    project_entry = validate_project_entry(project_entry)
+
     # Parse the provided entry to extract/modify properties
     lines = project_entry.split("\n")
 
@@ -815,8 +823,11 @@ def update_project(
     else:
         new_content = old_content
 
-    # Apply section update
+    # Apply section update.  The body sits under a ** heading, so any heading
+    # inside it has to be *** or deeper; a ** line would silently become a
+    # sibling section and cut the body short.
     if section and content is not None:
+        content = validate_project_section_content(section, content)
         new_content = replace_project_section(new_content, section, content)
 
     # Apply property updates

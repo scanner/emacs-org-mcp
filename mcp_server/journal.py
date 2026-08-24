@@ -17,6 +17,7 @@ from mcp_server.utils import (
     request_ediff_approval,
     write_file,
 )
+from mcp_server.validation import validate_journal_content
 
 # NOTE: get_current_timestamp is imported for potential future use and
 # to keep the import pattern consistent with tasks.py; currently unused
@@ -243,6 +244,10 @@ def create_journal_entry(
     file_path = get_journal_path(target_date)
     tags = tags or []
 
+    # A * or ** line in the body would split the entry (or the whole day's
+    # date section) rather than becoming part of it.
+    content = validate_journal_content(content, headline)
+
     entry = JournalEntry(
         time=time_str,
         headline=headline,
@@ -373,6 +378,10 @@ def update_journal_entry(
         Creates backup before modification.
         Replaces entry while preserving other entries.
     """
+    # Validate before locating the entry so a malformed body never gets as far
+    # as touching the file.
+    content = validate_journal_content(content, headline)
+
     lookup_time = existing_time or time_str
     old_entry = find_journal_entry(file_path, lookup_time, existing_headline)
     line_number = old_entry.line_number

@@ -11,6 +11,24 @@
 - Addresses [[file:~/org/tasks.org::#task-gh-127][GH-127 task]]
 ```
 
+## Heading Levels
+
+The file's `* YYYY-MM-DD` date heading owns the day. **Each entry is one `**`
+heading; anything nested inside it must be `***` or deeper.**
+
+```org
+* 2026-08-24        <- the date heading, one per file
+** 14:30 Headline   <- an entry
+*** Detail          <- correct
+** 16:00 Headline   <- correct: the next entry
+```
+
+A `**` line in an entry body becomes a separate entry; a `*` line ends the
+day's section. The server rejects both and names the bad line.
+
+To quote org syntax, wrap it in `#+begin_example` — the server comma-escapes
+the contents.
+
 ## Components
 
 - **Time:** 24-hour format (`14:30`)
