@@ -39,7 +39,11 @@ test-mcp: ## Test the MCP server with a simple tools/list request
 
 mcp-install: ## Install this MCP server globally in Claude Code
 	@echo "Installing MCP server '$(MCP_NAME)' globally..."
-	claude mcp add --scope user $(MCP_NAME) -- uv --directory $(ROOT_DIR) run $(SERVER_SCRIPT)
+	@UV_PATH=$$(command -v uv) && \
+	  if [ -z "$$UV_PATH" ]; then \
+	    echo "Error: uv not found on PATH" >&2; exit 1; \
+	  fi && \
+	  claude mcp add --scope user $(MCP_NAME) -- $$UV_PATH --directory $(ROOT_DIR) run $(SERVER_SCRIPT)
 	@echo "MCP server installed. Restart Claude Code to use it."
 
 mcp-uninstall: ## Uninstall this MCP server from Claude Code
