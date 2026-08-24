@@ -79,6 +79,7 @@ emacs-task-journal-mcp/
 │   ├── tasks.py           # Task CRUD, orgmunge ops, write guard
 │   ├── journal.py         # Journal CRUD (manual parsing)
 │   ├── projects.py        # Project CRUD (manual parsing)
+│   ├── properties.py      # Canonical :PROPERTIES: drawer format
 │   ├── validation.py      # Heading-level validation, block escaping
 │   ├── versioning.py      # Git auto-commit of org file changes
 │   └── utils.py           # Timestamps, atomic file I/O, ediff bridge
@@ -93,6 +94,7 @@ emacs-task-journal-mcp/
     ├── test_factories.py
     ├── test_journal.py
     ├── test_projects.py
+    ├── test_properties.py
     ├── test_resources.py
     ├── test_task_integrity.py  # Data-loss regression tests
     ├── test_tasks.py
@@ -174,6 +176,44 @@ such lines (`,* Tasks`), which is what Emacs itself does.
 - `find_unparsed_tasks()` reports tasks present in the file but invisible to
   the parser. `list_tasks` output and `find_task` "not found" errors surface
   these rather than silently omitting them.
+
+### Canonical PROPERTIES Drawer (`mcp_server/properties.py`)
+
+There is exactly **one** correct rendering of a drawer. It is Emacs's own:
+`org-property-format` defaults to `"%-10s %s"` — key (colons included) padded
+to ten characters, then one space, then the value — with a three-space body
+indent. `:PROPERTIES:` and `:END:` stay at column zero.
+
+```org
+:PROPERTIES:
+   :ID:       C5045326-9DC8-4F1E-A895-8895720DD928
+   :CUSTOM_ID: project-asimap
+   :CREATED:  <2026-04-03 Fri 23:13>
+:END:
+```
+
+`:CUSTOM_ID:` is eleven characters, so it overflows its field by one — that is
+correct, not a bug. Properties are ordered by `PROPERTY_ORDER`, then any
+unknown ones alphabetically.
+
+Choosing Emacs's format matters beyond taste: `org-set-property` writes drawers
+we already consider canonical, so hand-editing in Emacs does not reintroduce
+churn on the next write.
+
+`normalize_drawers()` runs inside `write_file()`, so every file the server
+writes gets canonical drawers regardless of which code path produced them —
+including project files, which build their own drawers. It is **idempotent**:
+already-canonical text comes back byte-identical, which means no diff, no
+commit, and no churn. Drawers inside `#+begin_.../#+end_...` blocks are left
+alone; so are unterminated drawers and ones containing unrecognised lines.
+
+`heading_to_org_string()` uses the same `format_drawer()`, so what `get_task`
+returns is byte-identical to what is on disk and a read-modify-write cycle
+converges.
+
+**Known gap**: orgmunge also drops blank lines between sections on every
+write, so whole-file round trips are still not byte-stable. That is tracked
+separately and drawer formatting cannot fix it.
 
 ### Git Versioning (`mcp_server/versioning.py`)
 

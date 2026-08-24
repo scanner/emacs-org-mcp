@@ -14,6 +14,7 @@ from orgmunge.classes import Heading
 
 # project imports
 from mcp_server.config import global_state
+from mcp_server.properties import format_drawer
 from mcp_server.utils import (
     format_simple_diff,
     get_current_timestamp,
@@ -124,20 +125,6 @@ def find_section(org: Org, section_name: str) -> Heading | None:
 
 ###############################################################################
 #
-# Canonical property order for the :PROPERTIES: drawer.  Known properties are
-# written first in this order; any unrecognised extras follow alphabetically.
-_PROPERTY_ORDER = (
-    "ID",
-    "CUSTOM_ID",
-    "CREATED",
-    "MODIFIED",
-    "CLOSED",
-    "PROJECT",
-)
-
-
-###############################################################################
-#
 def heading_to_org_string(heading: Heading) -> str:
     """
     Convert an orgmunge heading back to org-mode string format.
@@ -174,17 +161,7 @@ def heading_to_org_string(heading: Heading) -> str:
         if hasattr(heading, "properties") and heading.properties
         else {}
     )
-    if props:
-        lines.append(":PROPERTIES:")
-        rendered: set[str] = set()
-        for prop in _PROPERTY_ORDER:
-            if prop in props:
-                lines.append(f"   :{prop}: {props[prop]}")
-                rendered.add(prop)
-        for prop in sorted(props.keys()):
-            if prop not in rendered:
-                lines.append(f"   :{prop}: {props[prop]}")
-        lines.append(":END:")
+    lines.extend(format_drawer(props))
 
     # Add body if present
     if heading.body:

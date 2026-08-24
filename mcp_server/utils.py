@@ -13,6 +13,7 @@ from pathlib import Path
 
 # project imports
 from mcp_server.config import global_state, logger
+from mcp_server.properties import normalize_drawers
 from mcp_server.versioning import commit_file, ensure_backups_ignored
 
 # =============================================================================
@@ -146,6 +147,11 @@ def write_file(path: Path, content: str, summary: str | None = None) -> None:
         an atomic rename, so the file is never observed half-written.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # There is one correct rendering of a drawer; already-correct files come
+    # back byte-identical, so this costs nothing when nothing is wrong.
+    content = normalize_drawers(content)
+
     if not content.endswith("\n"):
         content += "\n"
 
