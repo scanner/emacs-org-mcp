@@ -1058,6 +1058,53 @@ def find_unparsed_tasks() -> list[str]:
 
 ###############################################################################
 #
+def find_lost_sections() -> list[str]:
+    """
+    List section headings present in tasks.org that the parser cannot resolve.
+
+    Returns:
+        Names of configured sections that exist as ``* <name>`` in the raw file
+        but which :func:`find_section` does not find.
+
+    Note:
+        A lost section is worse than a lost task.  Every task under it is
+        absorbed into the section before it, so they are still *parsed* -- just
+        filed under the wrong heading.  That makes completed tasks show up as
+        active, which :func:`find_unparsed_tasks` cannot catch, because from
+        its point of view nothing went missing.
+    """
+    tasks_file = global_state.config.tasks_file
+    if not tasks_file.exists():
+        return []
+
+    content = tasks_file.read_text(encoding="utf-8")
+    org = get_org()
+
+    lost: list[str] = []
+    for name in (
+        global_state.config.active_section,
+        global_state.config.completed_section,
+        global_state.config.high_level_section,
+    ):
+        if find_section(org, name) is not None:
+            continue
+
+        # Look for the heading by name rather than through scan_headings: an
+        # indented "* Completed Tasks" is one of the ways a section gets lost,
+        # and the general scanners deliberately ignore a lone indented star
+        # because it is normally a list bullet.  Matching an exact section name
+        # removes that ambiguity.
+        pattern = re.compile(
+            rf"^[ \t]*\*+[ \t]+{re.escape(name)}[ \t]*(?:\[\d*/\d*\])?[ \t]*$"
+        )
+        if any(pattern.match(line) for line in content.split("\n")):
+            lost.append(name)
+
+    return lost
+
+
+###############################################################################
+#
 def format_unparsed_warning(unparsed: list[str]) -> list[str]:
     """
     Render a warning block for tasks the parser cannot see.
@@ -1067,20 +1114,43 @@ def format_unparsed_warning(unparsed: list[str]) -> list[str]:
 
     Returns:
         Lines to append to tool output, or an empty list if nothing is wrong.
-    """
-    if not unparsed:
-        return []
 
-    lines = [
-        "",
-        f"⚠ WARNING: {len(unparsed)} task(s) exist in the file but are not "
-        "visible to the parser:",
-    ]
-    lines.extend(f"    {identity}" for identity in unparsed)
-    lines.append(
-        "  They cannot be found or updated until the file structure is "
-        "repaired -- look for a stray heading that has re-parented them."
-    )
+    Note:
+        Also reports sections the parser has lost, which is a more serious
+        condition: the tasks under them are silently filed under the wrong
+        heading rather than going missing.
+    """
+    lines: list[str] = []
+
+    if lost := find_lost_sections():
+        lines.extend(
+            [
+                "",
+                f"⚠ WARNING: {len(lost)} section heading(s) exist in the file "
+                "but the parser cannot see them:",
+            ]
+        )
+        lines.extend(f"    * {name}" for name in lost)
+        lines.append(
+            "  Every task under them has been absorbed into the section above, "
+            "so they are reported under the wrong heading -- completed tasks "
+            "will appear as active. Repair the file structure."
+        )
+
+    if unparsed:
+        lines.extend(
+            [
+                "",
+                f"⚠ WARNING: {len(unparsed)} task(s) exist in the file but are "
+                "not visible to the parser:",
+            ]
+        )
+        lines.extend(f"    {identity}" for identity in unparsed)
+        lines.append(
+            "  They cannot be found or updated until the file structure is "
+            "repaired -- look for a stray heading that has re-parented them."
+        )
+
     return lines
 
 

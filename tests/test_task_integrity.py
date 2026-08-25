@@ -27,6 +27,7 @@ import pytest
 
 from mcp_server.tasks import (
     create_task,
+    find_lost_sections,
     find_section,
     find_task,
     find_unparsed_tasks,
@@ -407,6 +408,36 @@ class TestHiddenTaskDetection:
         """
         with pytest.raises(ValueError, match="not visible to the parser"):
             find_task("task-victim")
+
+    ####################################################################
+    #
+    def test_a_lost_section_is_reported(self, temp_org_dir: Path):
+        """
+        GIVEN: a file whose Completed Tasks heading the parser cannot resolve
+        WHEN:  the task list is formatted
+        THEN:  the lost section is reported
+
+        This is worse than a lost task and invisible to find_unparsed_tasks:
+        the tasks under the section are still parsed, just filed under the
+        heading above, so DONE tasks get reported as active. Nothing goes
+        missing, so only a section-level check catches it.
+        """
+        tasks_file = temp_org_dir / "tasks.org"
+        tasks_file.write_text(
+            "* Tasks\n"
+            "** TODO Active one\n"
+            ":PROPERTIES:\n   :CUSTOM_ID: task-active\n:END:\n"
+            " * Completed Tasks\n"
+            "** DONE Finished one\n"
+            ":PROPERTIES:\n   :CUSTOM_ID: task-finished\n:END:\n"
+        )
+
+        assert find_lost_sections() == ["Completed Tasks"]
+
+        output = format_task_list(list_tasks("Tasks"), "Tasks")
+
+        assert "Completed Tasks" in output
+        assert "appear as active" in output
 
     ####################################################################
     #

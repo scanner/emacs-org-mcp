@@ -125,7 +125,10 @@ def format_drawer(props: dict[str, str]) -> list[str]:
 
     return [
         ":PROPERTIES:",
-        *(format_property(name, value) for name, value in sort_properties(props)),
+        *(
+            format_property(name, value)
+            for name, value in sort_properties(props)
+        ),
         ":END:",
     ]
 

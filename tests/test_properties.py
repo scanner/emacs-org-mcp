@@ -128,7 +128,10 @@ class TestNormalizeDrawers:
 
         result = normalize_drawers(content)
 
-        assert result == f"** TODO Sample task\n{CANONICAL}\n*** Description\nHi.\n"
+        assert (
+            result
+            == f"** TODO Sample task\n{CANONICAL}\n*** Description\nHi.\n"
+        )
 
     ####################################################################
     #
