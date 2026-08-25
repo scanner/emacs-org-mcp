@@ -165,6 +165,11 @@ class TestScanTaskIdentities:
                 ["headline:Untitled task"],
                 id="falls-back-to-headline",
             ),
+            pytest.param(
+                "* Tasks\n** TODO Tagged task    :booklore:work:\n",
+                ["headline:Tagged task"],
+                id="strips-tags-from-headline-key",
+            ),
         ],
     )
     def test_identifies_every_task_in_the_raw_text(self, content, expected):

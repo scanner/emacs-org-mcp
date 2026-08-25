@@ -199,6 +199,33 @@ def _properties(heading: Heading) -> SimpleNamespace:
 
 ###############################################################################
 #
+# Trailing org tags on a headline, e.g. "  :booklore:work:".
+_TAGS_RE = re.compile(r"[ \t]+(:[\w@%#]+)+:[ \t]*$")
+
+
+###############################################################################
+#
+def _strip_tags(headline: str) -> str:
+    """
+    Remove trailing org tags from a headline.
+
+    Args:
+        headline: Headline text, possibly ending in ``:tag1:tag2:``
+
+    Returns:
+        The headline without its tags.
+
+    Note:
+        The parser reports ``headline.title`` with tags already stripped, so a
+        raw scan has to strip them too.  Otherwise a task carrying tags and no
+        :CUSTOM_ID: never matches its parsed counterpart, and the write guard
+        refuses perfectly good writes.
+    """
+    return _TAGS_RE.sub("", headline).strip()
+
+
+###############################################################################
+#
 def scan_task_identities(file_content: str) -> list[str]:
     """
     List every task in a tasks.org file by scanning the raw text.
@@ -244,7 +271,7 @@ def scan_task_identities(file_content: str) -> list[str]:
                 custom_id = stripped.split(":", 2)[2].strip()
                 break
 
-        identities.append(custom_id or f"headline:{rest.strip()}")
+        identities.append(custom_id or f"headline:{_strip_tags(rest)}")
 
     return identities
 
