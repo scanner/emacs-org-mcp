@@ -69,9 +69,20 @@ emacs-task-journal-mcp/
 ├── README.md              # User documentation
 ├── pyproject.toml         # uv/Python project config
 ├── uv.lock                # Lock file
-├── server.py              # Main MCP server implementation
+├── server.py              # Entry point
 ├── emacs_ediff.el         # Emacs Lisp for ediff approval workflow
 ├── manual_test_ediff.py   # Manual test script for ediff approval
+├── mcp_server/            # Server implementation
+│   ├── config.py          # Config dataclass and global state
+│   ├── tools.py           # MCP tool definitions and dispatch
+│   ├── resources.py       # MCP resource definitions and guide loading
+│   ├── tasks.py           # Task CRUD, orgmunge ops, write guard
+│   ├── journal.py         # Journal CRUD (manual parsing)
+│   ├── projects.py        # Project CRUD (manual parsing)
+│   ├── properties.py      # Canonical :PROPERTIES: drawer format
+│   ├── validation.py      # Heading-level validation, block escaping
+│   ├── versioning.py      # Git auto-commit of org file changes
+│   └── utils.py           # Timestamps, atomic file I/O, ediff bridge
 ├── resources/guides/      # MCP resource guide files
 │   ├── task-format.md
 │   ├── journal-format.md
@@ -79,10 +90,16 @@ emacs-task-journal-mcp/
 └── tests/
     ├── conftest.py        # Shared fixtures and factories
     ├── test_config.py
+    ├── test_ediff.py
+    ├── test_factories.py
     ├── test_journal.py
     ├── test_projects.py
+    ├── test_properties.py
     ├── test_resources.py
-    └── test_tasks.py
+    ├── test_task_integrity.py  # Data-loss regression tests
+    ├── test_tasks.py
+    ├── test_validation.py
+    └── test_versioning.py
 ```
 
 ## Key Design Decisions
@@ -110,6 +127,118 @@ The `create_task` and `update_task` tools accept `task_entry` as a complete org-
 ### Automatic Section Movement
 
 When `update_task` is called and the TODO state changes (e.g., `TODO` → `DONE`), the task automatically moves to the appropriate section (Active → Completed or vice versa).
+
+### Structural Validation (`mcp_server/validation.py`)
+
+Every document has a fixed root level and all topics must nest below it:
+
+| Document | Root | Topics must be |
+|----------|------|----------------|
+| Task | `**` | `***` or deeper |
+| Journal entry | `**` | `***` or deeper |
+| Project file | `*` | `**` or deeper |
+
+Submitted content that breaks this is **rejected** with a message naming the
+offending line and its corrected form. This is a data-loss guard, not style
+enforcement: orgmunge keeps only the first `**` heading of a task entry, so a
+stray sibling silently discarded everything after it while reporting success.
+
+Validation runs in `parse_task_entry`, `create_journal_entry`,
+`update_journal_entry`, `create_project`, and `update_project` — the parser
+boundary, so no tool path can bypass it.
+
+Two distinct corruptions hide a task from the org parser. Both are guarded
+against, and both have regression tests in `tests/test_task_integrity.py`:
+
+**Indented heading** (root cause of the 2026-08-23 data loss). A single leading
+space turns `** TODO Task` into body text, so org folds the whole task —
+drawer, subsections and all — into the *preceding* task's subtree. This
+reproduces every reported symptom: `get_task` cannot find it, `list_tasks`
+omits it positionally, and `search_tasks` for text unique to its body returns
+the task *before* it. A full-replacement `update_task` on that preceding task
+then overwrites the absorbed region and the task is destroyed.
+`find_indented_headings()` detects these; note it requires **two or more**
+stars, since a lone indented `*` is a legitimate org list bullet.
+
+**Phantom heading.** orgmunge does not exempt `#+begin_src`/`#+begin_example`
+blocks — a `* Tasks` line inside a block parses as a real level-1 heading and
+re-parents every task after it. `escape_headings_in_blocks()` comma-escapes
+such lines (`,* Tasks`), which is what Emacs itself does.
+
+### Write Integrity Guarantees (`mcp_server/tasks.py`)
+
+- `write_tasks_org()` wraps every write to `tasks.org`. It scans the raw text
+  before and after (via `scan_task_identities()`, deliberately **not** using
+  orgmunge) and refuses the write if any task other than the named `target`
+  would disappear. This holds regardless of *why* a task went missing.
+- `write_file()` writes via temp file + atomic rename and retains the previous
+  version as `<name>.bak`, so recovery never depends on an Emacs autosave.
+- `find_unparsed_tasks()` reports tasks present in the file but invisible to
+  the parser. `list_tasks` output and `find_task` "not found" errors surface
+  these rather than silently omitting them.
+
+### Canonical PROPERTIES Drawer (`mcp_server/properties.py`)
+
+There is exactly **one** correct rendering of a drawer. It is Emacs's own:
+`org-property-format` defaults to `"%-10s %s"` — key (colons included) padded
+to ten characters, then one space, then the value — with a three-space body
+indent. `:PROPERTIES:` and `:END:` stay at column zero.
+
+```org
+:PROPERTIES:
+   :ID:       C5045326-9DC8-4F1E-A895-8895720DD928
+   :CUSTOM_ID: project-asimap
+   :CREATED:  <2026-04-03 Fri 23:13>
+:END:
+```
+
+`:CUSTOM_ID:` is eleven characters, so it overflows its field by one — that is
+correct, not a bug. Properties are ordered by `PROPERTY_ORDER`, then any
+unknown ones alphabetically.
+
+Choosing Emacs's format matters beyond taste: `org-set-property` writes drawers
+we already consider canonical, so hand-editing in Emacs does not reintroduce
+churn on the next write.
+
+`normalize_drawers()` runs inside `write_file()`, so every file the server
+writes gets canonical drawers regardless of which code path produced them —
+including project files, which build their own drawers. It is **idempotent**:
+already-canonical text comes back byte-identical, which means no diff, no
+commit, and no churn. Drawers inside `#+begin_.../#+end_...` blocks are left
+alone; so are unterminated drawers and ones containing unrecognised lines.
+
+`heading_to_org_string()` uses the same `format_drawer()`, so what `get_task`
+returns is byte-identical to what is on disk and a read-modify-write cycle
+converges.
+
+**Known gap**: orgmunge also drops blank lines between sections on every
+write, so whole-file round trips are still not byte-stable. That is tracked
+separately and drawer formatting cannot fix it.
+
+### Git Versioning (`mcp_server/versioning.py`)
+
+Every org write is committed to that file's own git repository, so history is a
+record of what changed and when. This is what turns a bad write from an
+incident into a `git revert`.
+
+Rules, in priority order:
+
+1. **Versioning never breaks an org operation.** By the time it runs the file is
+   already written. Not a repo, no git, a held `index.lock`, a rebase in
+   progress — all logged and shrugged off.
+2. **Only the touched file is committed.** Uses `repo.git.commit(... "--", path)`
+   — a pathspec commit — *not* `repo.index.commit()`, which would sweep up
+   whatever the user happened to have staged.
+3. **We never create a repository.** No repo means no-op.
+
+Because a pathspec commit takes the file's working-tree content, edits made
+outside the server are swept into the next commit. That is intentional: no
+version goes unrecorded, even when the server did not make the change.
+
+Hooked into `write_file()` so no CRUD path can forget it; callers opt in by
+passing a `summary`, which becomes `emacs-org-mcp: <summary>`. Backups are
+added to the repo's `.gitignore` — they sit next to the file they protect,
+which in a synced org directory would otherwise replicate everywhere.
 
 ### Ediff Approval (Enabled by Default)
 
@@ -169,6 +298,7 @@ All settings can be overridden via environment variables or command-line flags:
 | `COMPLETED_SECTION` / `--completed-section` | `Completed Tasks` | Section name for completed/DONE tasks |
 | `HIGH_LEVEL_SECTION` / `--high-level-section` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
 | `EMACS_EDIFF_APPROVAL` / `--ediff-approval` / `--no-ediff-approval` | `true` | Visual approval via Emacs ediff (enabled by default, use `false` or `--no-ediff-approval` to disable) |
+| `GIT_AUTOCOMMIT` / `--git-autocommit` / `--no-git-autocommit` | `true` | Commit each org file change to git (no-op if the org directory is not a repo) |
 | `EMACSCLIENT_PATH` / `--emacsclient-path` | _(searches PATH)_ | Custom path to `emacsclient` executable (optional) |
 
 ## Task Format Reference
@@ -342,6 +472,10 @@ Expected behavior:
 - No support for scheduled/deadline timestamps in parsing (preserved in content)
 - Journal files use manual parsing, not orgmunge
 - No concurrent access protection (relies on single-user access pattern)
+- orgmunge does not honour `#+begin_src`/`#+begin_example` fencing; the server
+  works around it by comma-escaping heading-like lines inside blocks on write,
+  but org content written to these files by other means can still confuse the
+  parser (`find_unparsed_tasks()` will report it)
 
 ## Related Files
 

@@ -2,7 +2,8 @@
 """MCP Server for Emacs Org-Mode Tasks, Journal, and Project Management
 
 Usage:
-  server.py [--ediff-approval] [--no-ediff-approval] [--org-dir=<path>] [--journal-dir=<path>]
+  server.py [--ediff-approval] [--no-ediff-approval] [--git-autocommit] [--no-git-autocommit]
+            [--org-dir=<path>] [--journal-dir=<path>]
             [--projects-dir=<path>] [--active-section=<name>] [--completed-section=<name>]
             [--high-level-section=<name>] [--emacsclient-path=<path>]
   server.py (-h | --help)
@@ -11,6 +12,8 @@ Usage:
 Options:
   --ediff-approval              Enable ediff approval (default, kept for backwards compatibility)
   --no-ediff-approval           Disable ediff approval
+  --git-autocommit              Commit org file changes to git (default, kept for backwards compatibility)
+  --no-git-autocommit           Do not commit org file changes to git
   --org-dir=<path>              Base org directory [default: ~/org]
   --journal-dir=<path>          Journal directory (defaults to <org-dir>/journal)
   --projects-dir=<path>         Projects directory (defaults to <org-dir>/projects)
@@ -23,7 +26,7 @@ Options:
 
 Configuration Priority:
   1. Command-line arguments (highest)
-  2. Environment variables (EMACS_EDIFF_APPROVAL, ORG_DIR, etc.)
+  2. Environment variables (EMACS_EDIFF_APPROVAL, GIT_AUTOCOMMIT, ORG_DIR, etc.)
   3. Defaults (lowest)
 
 Uses orgmunge for robust org-mode file manipulation.

@@ -35,12 +35,37 @@ Task purpose and context.
 Additional information.
 ```
 
+## Heading Levels
+
+**A task is one `**` heading. Every subsection must be `***` or deeper.**
+
+```org
+** TODO GH-123 Task description   <- the task
+*** Description                   <- correct
+**** Background                   <- correct
+** Notes                          <- WRONG: starts a second task
+```
+
+A stray `**` splits the entry and drops everything after it. The server
+rejects such entries and names the bad line.
+
+Org reads a leading `*` as a heading **even inside `#+begin_src`**. Quote org
+syntax inside a block and the server comma-escapes it for you:
+
+```org
+#+begin_example
+,* Tasks
+#+end_example
+```
+
 ## Properties
 
 - `:CUSTOM_ID:` — Required. Use `task-<ticket-id>` format (e.g., `task-gh-123`)
 - `:ID:` — Auto-generated UUID if omitted
 - `:CREATED:`, `:MODIFIED:`, `:CLOSED:` — Auto-managed timestamps
-- `:PROJECT:` — Optional. Links task to a project (value: project CUSTOM_ID, e.g., `project-booklore`)
+- `:PROJECT:` — Required when the task belongs to a project. Value is the
+  project's `:CUSTOM_ID:` (e.g., `project-booklore`). See "Linking Tasks to
+  Projects" below.
 
 ## Finding Tasks
 
@@ -63,6 +88,35 @@ subsections. Always `search_tasks` first to avoid duplicates.
 The `update_task` tool takes an `identifier` (to find the task) and a
 `task_entry` string (the complete replacement). Preserve all existing PROPERTIES
 (`:ID:`, `:CUSTOM_ID:`, `:CREATED:`) when updating.
+
+## Linking Tasks to Projects
+
+**Required step when creating or updating a task.** Linking is two-sided and
+the two sides are separate calls:
+
+1. `list_projects` (or `search_projects`) to find a matching project.
+2. If one matches, set `:PROJECT: project-<slug>` in the task's PROPERTIES
+   drawer — this is the task → project half.
+3. Call `link_task_to_project` to add the link to the project's
+   `Related Tasks` section — this is the project → task half.
+
+`link_task_to_project` only writes the project file. It does **not** set
+`:PROJECT:` on the task; do that yourself in the same `task_entry`.
+
+```org
+** TODO GH-28 Implement chunking
+:PROPERTIES:
+   :CUSTOM_ID: task-gh-28
+   :PROJECT:  project-booklore
+:END:
+```
+
+```json
+{"project_identifier": "booklore",
+ "task_link": "- [[file:~/org/tasks.org::#task-gh-28][GH-28 Implement chunking]]"}
+```
+
+If no project matches, skip both steps — do not invent a project.
 
 ## Automatic Behaviors
 

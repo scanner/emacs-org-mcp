@@ -44,6 +44,24 @@ Architecture decisions, key constraints, technical approach.
 Freeform notes, decisions, context.
 ```
 
+## Heading Levels
+
+**A project file is one `*` heading. Every section must be `**` or deeper.**
+
+```org
+* Project Title  :project:   <- one per file
+** Description               <- correct
+*** Sub-topic                <- correct
+* Other Project              <- WRONG: only the first * heading is read
+```
+
+A second `*` heading makes everything after it unreachable. The server rejects
+such entries and names the bad line. The same rule applies to `update_project`
+section bodies: content under a `**` section must use `***` or deeper.
+
+To quote org syntax, wrap it in `#+begin_example` — the server comma-escapes
+the contents.
+
 ## Properties
 
 All properties live in the `:PROPERTIES:` drawer immediately after the heading.
@@ -87,9 +105,13 @@ Not all sections are required. Use only what is relevant to the project. Additio
 
 Projects, tasks, and journal entries link to each other:
 
+Linking is **two-sided and takes two calls**. Doing only one leaves the pair
+half-linked.
+
 ### Tasks to Projects
 
-Add a `:PROJECT:` property to the task's `:PROPERTIES:` drawer:
+Set `:PROJECT:` to the project's `:CUSTOM_ID:` in the task's drawer, via
+`create_task` / `update_task`:
 
 ```org
 ** TODO GH-28 Implement feature
@@ -99,19 +121,25 @@ Add a `:PROJECT:` property to the task's `:PROPERTIES:` drawer:
 :END:
 ```
 
-The value is the project's `:CUSTOM_ID:`.
-
 ### Projects to Tasks
 
-Add org-mode file links in the `Related Tasks` section:
+Use `link_task_to_project`, which appends to the project's `Related Tasks`
+section:
 
 ```org
 ** Related Tasks
 - [[file:~/org/tasks.org::#task-gh-28][GH-28 Implement feature]]
-- [[file:~/org/tasks.org::#task-gh-42][GH-42 Write documentation]]
 ```
 
-Use the `link_task_to_project` tool to add these links.
+This tool writes **only** the project file — it does not set `:PROJECT:` on
+the task.
+
+### Required Workflow
+
+- **Creating or updating a project**: `search_tasks` for tasks that belong to
+  it, then link both sides for each match.
+- **Creating or updating a task**: `list_projects` for a matching project,
+  then link both sides. If none matches, skip — do not invent a project.
 
 ### Journal Entries for Projects
 

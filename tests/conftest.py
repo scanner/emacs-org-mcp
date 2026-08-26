@@ -302,6 +302,7 @@ def temp_org_dir(
             journal_dir=journal_dir,
             projects_dir=projects_dir,
             ediff_approval=False,
+            git_autocommit=False,
         )
     )
 

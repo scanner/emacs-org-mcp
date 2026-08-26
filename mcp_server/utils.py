@@ -4,6 +4,7 @@ Shared utilities: timestamps, file I/O, diff, and ediff approval integration.
 
 # system imports
 import difflib
+import os
 import shutil
 import subprocess
 import tempfile
@@ -12,6 +13,8 @@ from pathlib import Path
 
 # project imports
 from mcp_server.config import global_state, logger
+from mcp_server.properties import normalize_drawers
+from mcp_server.versioning import commit_file, ensure_backups_ignored
 
 # =============================================================================
 # Timestamp Utilities
@@ -121,22 +124,61 @@ def format_simple_diff(old_content: str, new_content: str) -> str:
 
 ###############################################################################
 #
-def write_file(path: Path, content: str) -> None:
+def write_file(path: Path, content: str, summary: str | None = None) -> None:
     """
-    Write content to file, ensuring it ends with newline.
+    Write content to file atomically, ensuring it ends with newline.
 
     Args:
         path: Path to write to
         content: Content to write
+        summary: Short description of the change for the git commit message,
+            e.g. "update task task-gh-28".  When omitted the file is written
+            but not committed.
 
     Note:
+        Committing is done here rather than at the individual CRUD sites so
+        that no write path can forget it.  It is best effort and never raises:
+        see :mod:`mcp_server.versioning`.
         Creates parent directories if they don't exist.
         Automatically adds trailing newline if not present.
+        The previous contents are retained as ``<name>.bak`` so a bad write is
+        always recoverable without depending on an Emacs autosave existing.
+        The write itself goes to a temp file in the same directory followed by
+        an atomic rename, so the file is never observed half-written.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # There is one correct rendering of a drawer; already-correct files come
+    # back byte-identical, so this costs nothing when nothing is wrong.
+    content = normalize_drawers(content)
+
     if not content.endswith("\n"):
         content += "\n"
-    path.write_text(content, encoding="utf-8")
+
+    # Retain the previous version before replacing it.
+    if path.exists():
+        previous = path.with_suffix(f"{path.suffix}.bak")
+        previous.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    # Write to a sibling temp file, then rename.  os.replace is atomic on the
+    # same filesystem, so readers see either the old file or the new one.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    if summary is not None:
+        ensure_backups_ignored(path)
+        commit_file(path, summary)
 
 
 ###############################################################################

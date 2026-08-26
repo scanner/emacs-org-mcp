@@ -39,11 +39,13 @@ from mcp_server.projects import (
 from mcp_server.tasks import (
     create_task,
     find_task,
+    find_unparsed_tasks,
     format_move_result,
     format_task_create_result,
     format_task_detail,
     format_task_list,
     format_task_update_result,
+    format_unparsed_warning,
     list_tasks,
     move_task,
     search_tasks,
@@ -165,6 +167,7 @@ async def handle_list_tools() -> list[Tool]:
                 "Create a new task in a section. Provide the complete org-formatted task entry with PROPERTIES drawer and subsections. "
                 "The :ID: property is auto-generated if not provided. Always search for duplicates before creating. "
                 "CREATED and MODIFIED timestamps are managed automatically. "
+                "Check list_projects for a related project: if one matches, set :PROJECT: in the drawer AND call link_task_to_project. "
                 "For format specifications, read emacs-org://guide/task-format."
                 ""
             ),
@@ -184,7 +187,8 @@ async def handle_list_tools() -> list[Tool]:
                         "description": (
                             "Complete task in org format with heading, PROPERTIES drawer (:CUSTOM_ID: required, :ID: optional), "
                             "and subsections (*** Description, *** Task items [/], etc.). "
-                            "Example: '** TODO GH-123 Task\\n:PROPERTIES:\\n:CUSTOM_ID: task-gh-123\\n:END:\\n\\n*** Task items [/]\\n- [ ] item'"
+                            "Example: '** TODO GH-123 Task\\n:PROPERTIES:\\n:CUSTOM_ID: task-gh-123\\n:END:\\n\\n*** Task items [/]\\n- [ ] item'. "
+                            "The task is one ** heading; every subsection must be *** or deeper. A stray ** is rejected."
                         ),
                     },
                 },
@@ -199,6 +203,7 @@ async def handle_list_tools() -> list[Tool]:
                 "(2) DONE→TODO moves to Tasks section and clears CLOSED timestamp, "
                 "(3) MODIFIED timestamp updated automatically. "
                 "Preserve all PROPERTIES including :ID:, :CUSTOM_ID:, and :CREATED:. "
+                "Check list_projects for a related project: if one matches, set :PROJECT: in the drawer AND call link_task_to_project. "
                 "For format specifications, read emacs-org://guide/task-format. "
                 ""
             ),
@@ -211,7 +216,10 @@ async def handle_list_tools() -> list[Tool]:
                     },
                     "task_entry": {
                         "type": "string",
-                        "description": "Complete new task entry in org format with all properties and subsections preserved",
+                        "description": (
+                            "Complete new task entry in org format with all properties and subsections preserved. "
+                            "The task is one ** heading; every subsection must be *** or deeper. A stray ** is rejected."
+                        ),
                     },
                 },
                 "required": ["identifier", "task_entry"],
@@ -339,7 +347,8 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "string",
                         "description": (
                             "Entry body with bullet points (- ). Include task links using [[file:~/org/tasks.org::#task-id][Display]] format. "
-                            "Focus on outcomes, decisions, and follow-ups."
+                            "Focus on outcomes, decisions, and follow-ups. "
+                            "Any heading in the body must be *** or deeper; * and ** are rejected."
                         ),
                     },
                     "tags": {
@@ -376,7 +385,10 @@ async def handle_list_tools() -> list[Tool]:
                     },
                     "content": {
                         "type": "string",
-                        "description": "New body content with bullet points and optional task links",
+                        "description": (
+                            "New body content with bullet points and optional task links. "
+                            "Any heading in the body must be *** or deeper; * and ** are rejected."
+                        ),
                     },
                     "tags": {
                         "type": "array",
@@ -468,6 +480,7 @@ async def handle_list_tools() -> list[Tool]:
                 "Auto-generates :ID: (UUID), :CREATED:, and defaults :STATUS: to 'planning'. "
                 "The project_entry should include a level-1 heading, :PROPERTIES: drawer with "
                 ":CUSTOM_ID:, and level-2 sections (Description, Design, Goals, etc.). "
+                "Check search_tasks for tasks belonging to this project and link them with link_task_to_project. "
                 "For format specifications, read emacs-org://guide/project-format."
             ),
             inputSchema={
@@ -475,7 +488,10 @@ async def handle_list_tools() -> list[Tool]:
                 "properties": {
                     "project_entry": {
                         "type": "string",
-                        "description": "Complete org-formatted project string",
+                        "description": (
+                            "Complete org-formatted project string. Exactly one * heading; "
+                            "every section must be ** or deeper. A second * is rejected."
+                        ),
                     },
                 },
                 "required": ["project_entry"],
@@ -503,7 +519,10 @@ async def handle_list_tools() -> list[Tool]:
                     },
                     "content": {
                         "type": "string",
-                        "description": "New content for the section (used with section parameter)",
+                        "description": (
+                            "New content for the section (used with section parameter). "
+                            "Any heading in it must be *** or deeper; * and ** are rejected."
+                        ),
                     },
                     "properties": {
                         "type": "object",
@@ -544,7 +563,9 @@ async def handle_list_tools() -> list[Tool]:
             name="link_task_to_project",
             description=(
                 "Add a task link to a project's Related Tasks section. The task_link should be "
-                "an org-mode link like '- [[file:~/org/tasks.org::#task-gh-28][GH-28 Task name]]'."
+                "an org-mode link like '- [[file:~/org/tasks.org::#task-gh-28][GH-28 Task name]]'. "
+                "This writes only the project file: also set :PROJECT: on the task via update_task "
+                "to complete the link."
             ),
             inputSchema={
                 "type": "object",
@@ -656,7 +677,14 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             case "search_tasks":
                 tasks = search_tasks(arguments["query"])
-                output = format_search_results(tasks, "task")
+                # A task hidden from the parser makes search silently miss it,
+                # or return the task that absorbed it. Say so.
+                output = "\n".join(
+                    [
+                        format_search_results(tasks, "task"),
+                        *format_unparsed_warning(find_unparsed_tasks()),
+                    ]
+                )
                 return [TextContent(type="text", text=output)]
 
             # ----- Journal Operations -----

@@ -17,6 +17,7 @@ from mcp_server.utils import (
     request_ediff_approval,
     write_file,
 )
+from mcp_server.validation import validate_journal_content
 
 # NOTE: get_current_timestamp is imported for potential future use and
 # to keep the import pattern consistent with tasks.py; currently unused
@@ -243,6 +244,10 @@ def create_journal_entry(
     file_path = get_journal_path(target_date)
     tags = tags or []
 
+    # A * or ** line in the body would split the entry (or the whole day's
+    # date section) rather than becoming part of it.
+    content = validate_journal_content(content, headline)
+
     entry = JournalEntry(
         time=time_str,
         headline=headline,
@@ -276,7 +281,11 @@ def create_journal_entry(
         new_content = f"{date_heading}\n\n{final_entry_text}"
 
     backup_path = backup_file(file_path)
-    write_file(file_path, new_content)
+    write_file(
+        file_path,
+        new_content,
+        summary=f"create journal entry {target_date.isoformat()} {time_str}",
+    )
 
     # Remove backup after successful write
     if backup_path != file_path and backup_path.exists():
@@ -373,6 +382,10 @@ def update_journal_entry(
         Creates backup before modification.
         Replaces entry while preserving other entries.
     """
+    # Validate before locating the entry so a malformed body never gets as far
+    # as touching the file.
+    content = validate_journal_content(content, headline)
+
     lookup_time = existing_time or time_str
     old_entry = find_journal_entry(file_path, lookup_time, existing_headline)
     line_number = old_entry.line_number
@@ -428,7 +441,11 @@ def update_journal_entry(
     new_lines = lines[:entry_start] + new_entry_lines + lines[entry_end:]
 
     backup_path = backup_file(file_path)
-    write_file(file_path, "\n".join(new_lines))
+    write_file(
+        file_path,
+        "\n".join(new_lines),
+        summary=f"update journal entry {date_str} {time_str}",
+    )
 
     # Remove backup after successful write
     if backup_path != file_path and backup_path.exists():
