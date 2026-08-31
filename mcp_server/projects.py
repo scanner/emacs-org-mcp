@@ -10,8 +10,14 @@ from pathlib import Path
 
 # project imports
 from mcp_server.config import global_state, logger
+from mcp_server.results import (
+    DetailLevel,
+    Record,
+    render,
+)
 from mcp_server.utils import (
     backup_file,
+    format_age,
     format_simple_diff,
     get_current_timestamp,
     request_ediff_approval,
@@ -985,23 +991,101 @@ def link_task_to_project(project_identifier: str, task_link: str) -> str:
 
 ###############################################################################
 #
-def format_project_list(projects: list[Project]) -> str:
-    """Format a list of projects for display."""
-    if not projects:
-        return "No projects found"
+def project_to_record(project: Project) -> Record:
+    """
+    Adapt a project to the shared result envelope.
 
-    lines = ["Projects", "=" * 30, ""]
+    Args:
+        project: The project to adapt
 
-    for p in projects:
-        desc_preview = (
-            p.description.strip().split("\n")[0][:60]
-            if p.description.strip()
-            else "(no description)"
-        )
-        lines.append(f"  [{p.status}]  {p.title} ({p.slug})")
-        lines.append(f"           {desc_preview}")
+    Returns:
+        A :class:`Record` with the project's columns rendered.
 
-    return "\n".join(lines)
+    Note:
+        The first line of the description rides on the title rather than
+        taking a line of its own, which is what the old two-line format used
+        to spend. It sits at the end so that trimming a long line drops the
+        description before the project's own name.
+    """
+    summary = project.description.strip().split("\n")[0].strip()
+    title = f"{project.title} -- {summary}" if summary else project.title
+    age = format_age(project.modified or project.created)
+
+    return Record(
+        ref=project.slug,
+        prefix=f"[{project.status}]",
+        title=title,
+        suffix=" ".join(part for part in (f"({project.slug})", age) if part),
+        tags=list(project.tags),
+        content=project.raw_content,
+    )
+
+
+###############################################################################
+#
+def format_project_list(
+    projects: list[Project],
+    detail: DetailLevel = "index",
+    limit: int | None = None,
+    offset: int = 0,
+) -> str:
+    """
+    Format a list of projects for display.
+
+    Args:
+        projects: Projects to format
+        detail: Envelope detail level
+        limit: Maximum projects to show; None takes the level's default
+        offset: Projects to skip
+
+    Returns:
+        A rendered page.
+    """
+    return render(
+        [project_to_record(project) for project in projects],
+        tool="list_projects",
+        header="Projects",
+        detail=detail,
+        limit=limit,
+        offset=offset,
+    )
+
+
+###############################################################################
+#
+def format_project_search(
+    projects: list[Project],
+    query: str,
+    detail: DetailLevel = "snippet",
+    limit: int | None = None,
+    offset: int = 0,
+) -> str:
+    """
+    Format project search results.
+
+    Args:
+        projects: Matching projects
+        query: The query that produced them, used to build snippets
+        detail: Envelope detail level, defaulting to snippet
+        limit: Maximum matches to show; None takes the level's default
+        offset: Matches to skip
+
+    Returns:
+        A rendered page.
+
+    Note:
+        A project matches on any of its sections, so the snippet is what says
+        which part of it the query actually hit.
+    """
+    return render(
+        [project_to_record(project) for project in projects],
+        tool="search_projects",
+        header=f'search_projects("{query}")',
+        detail=detail,
+        limit=limit,
+        offset=offset,
+        query=query,
+    )
 
 
 ###############################################################################

@@ -14,10 +14,13 @@ from mcp_server.config import global_state, server
 from mcp_server.journal import (
     create_journal_entry,
     format_journal_create_result,
+    format_journal_dates,
     format_journal_detail,
     format_journal_list,
+    format_journal_search,
     format_journal_update_result,
     get_journal_path,
+    list_journal_dates,
     parse_journal_entries,
     search_journal,
     update_journal_entry,
@@ -28,6 +31,7 @@ from mcp_server.projects import (
     format_project_create_result,
     format_project_detail,
     format_project_list,
+    format_project_search,
     format_project_update_result,
     get_project,
     link_task_to_project,
@@ -36,16 +40,16 @@ from mcp_server.projects import (
     search_projects,
     update_project,
 )
+from mcp_server.results import DEFAULT_LIMIT, DETAIL_LEVELS
 from mcp_server.tasks import (
     create_task,
     find_task,
-    find_unparsed_tasks,
     format_move_result,
     format_task_create_result,
     format_task_detail,
     format_task_list,
+    format_task_search,
     format_task_update_result,
-    format_unparsed_warning,
     list_tasks,
     move_task,
     search_tasks,
@@ -101,6 +105,50 @@ def format_search_results(items: list, item_type: str) -> str:
     return "\n".join(lines)
 
 
+###############################################################################
+#
+def envelope_properties(default_detail: str) -> dict:
+    """
+    Return the paging and detail properties shared by every list and search.
+
+    Args:
+        default_detail: The level this tool uses when none is given --
+            ``index`` for a listing, ``snippet`` for a search
+
+    Returns:
+        JSON-schema properties to merge into a tool's inputSchema.
+
+    Note:
+        Defined once so the three knobs keep the same names and meanings
+        everywhere. A caller who learns them on one tool has learned them on
+        all of them.
+    """
+    return {
+        "detail": {
+            "type": "string",
+            "enum": list(DETAIL_LEVELS),
+            "description": (
+                f"How much of each record to return (default {default_detail}). "
+                "index: one line per record. snippet: that line plus the "
+                "matching lines, so you can see why it matched. full: the "
+                "whole record. snippet falls back to index when there is no "
+                "query to match against."
+            ),
+        },
+        "limit": {
+            "type": "integer",
+            "description": (
+                f"Maximum records to return (default {DEFAULT_LIMIT}). The "
+                "response states the total and how to fetch the next page."
+            ),
+        },
+        "offset": {
+            "type": "integer",
+            "description": "Records to skip, for paging (default 0).",
+        },
+    }
+
+
 # =============================================================================
 # MCP Tool Definitions
 # =============================================================================
@@ -116,7 +164,9 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="list_tasks",
             description=(
-                "List all tasks in a section of tasks.org. Returns task names, headlines, status, and full content. "
+                "List all tasks in a section of tasks.org. Returns one compact line per task: status, ticket ID, "
+                "headline and CUSTOM_ID. Task bodies are NOT included -- call get_task for a task's full content. "
+                "Also reports any tasks present in the file that the org parser cannot see. "
                 "Use this to check for existing tasks before creating new ones, or to get an overview of work in progress. "
                 "For detailed format specifications, read the emacs-org://guide/task-format resource."
             ),
@@ -130,7 +180,8 @@ async def handle_list_tools() -> list[Tool]:
                             global_state.config.active_section,
                             global_state.config.completed_section,
                         ],
-                    }
+                    },
+                    **envelope_properties("index"),
                 },
                 "required": ["section"],
             },
@@ -260,7 +311,10 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="search_tasks",
             description=(
-                "Search tasks by query string across all sections. Returns complete matching tasks. "
+                "Search tasks by query string across all sections. Case-insensitive substring match on headline "
+                "and content. Returns one compact line per matching task: status, ticket ID and headline. Task "
+                "bodies are NOT included -- call get_task for full content. Also reports any tasks the org parser "
+                "cannot see. "
                 "Use this to check for existing tasks before creating new ones, or to find tasks related to a topic. "
                 ""
             ),
@@ -270,7 +324,8 @@ async def handle_list_tools() -> list[Tool]:
                     "query": {
                         "type": "string",
                         "description": "Search query (matches headline and content)",
-                    }
+                    },
+                    **envelope_properties("snippet"),
                 },
                 "required": ["query"],
             },
@@ -279,7 +334,9 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="list_journal_entries",
             description=(
-                "List all journal entries for a specific date. Returns entry times, headlines, content, and tags. "
+                "List all journal entries for a specific date. Returns one line per entry -- time, headline and "
+                "tags -- followed by at most the first two lines of the body as a preview. Full bodies are NOT "
+                "included; call get_journal_entry for a complete entry. "
                 "Use this to check what's already logged before creating new entries to avoid duplicates. "
                 "For format specifications, read emacs-org://guide/journal-format."
             ),
@@ -289,7 +346,8 @@ async def handle_list_tools() -> list[Tool]:
                     "date": {
                         "type": "string",
                         "description": "Date in YYYY-MM-DD format. Defaults to today.",
-                    }
+                    },
+                    **envelope_properties("index"),
                 },
             },
         ),
@@ -415,7 +473,10 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="search_journal",
             description=(
-                "Search journal entries by query string across recent days. Returns complete matching entries. "
+                "Search journal entries by query string across recent days. Case-insensitive substring match on "
+                "headline and body. Returns one compact line per matching entry -- time, headline, tags and date. "
+                "Entry bodies are NOT included; call get_journal_entry for full content. Results are not limited "
+                "yet, so a common word over a long window can return a line for every entry that contains it. "
                 "Use this to find past work on a topic, review recent activity, or look up when something was done. "
                 "Searches last 30 days by default. "
                 ""
@@ -431,16 +492,48 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Days to search back (default 30, searches from today backwards)",
                     },
+                    **envelope_properties("snippet"),
                 },
                 "required": ["query"],
+            },
+        ),
+        Tool(
+            name="list_journal_dates",
+            description=(
+                "List which dates have journal entries, newest first, with the entry count and size of each "
+                "day. Returns one line per day and no entry content. Use this to find out what days exist "
+                "before reading any of them -- every other journal tool needs a date you already know. "
+                "Bound the range with since/until when you only care about a period."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "since": {
+                        "type": "string",
+                        "description": "Earliest date to include, YYYY-MM-DD. Omit for no lower bound.",
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "Latest date to include, YYYY-MM-DD. Omit for no upper bound.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum days to return (default 50).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Days to skip, for paging (default 0).",
+                    },
+                },
             },
         ),
         # ----- Project Tools -----
         Tool(
             name="list_projects",
             description=(
-                "List all projects, optionally filtered by status. Returns project titles, slugs, "
-                "status, and description previews. "
+                "List all projects, optionally filtered by status. Returns one line per project -- status, "
+                "title and slug -- plus a one-line description preview. Full project content is NOT included; "
+                "call get_project for that. "
                 "For detailed format specifications, read the emacs-org://guide/project-format resource."
             ),
             inputSchema={
@@ -451,6 +544,7 @@ async def handle_list_tools() -> list[Tool]:
                         "description": "Filter by project status",
                         "enum": list(VALID_PROJECT_STATUSES),
                     },
+                    **envelope_properties("index"),
                 },
             },
         ),
@@ -546,7 +640,9 @@ async def handle_list_tools() -> list[Tool]:
             name="search_projects",
             description=(
                 "Search across all projects by query string. Case-insensitive substring match "
-                "on project titles and all section content. Returns matching projects."
+                "on project titles and all section content. Returns one compact line per matching project: "
+                "status, title and slug. Project content is NOT included -- call get_project for a project's "
+                "full content."
             ),
             inputSchema={
                 "type": "object",
@@ -555,6 +651,7 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Search query (matches titles and content)",
                     },
+                    **envelope_properties("snippet"),
                 },
                 "required": ["query"],
             },
@@ -619,7 +716,13 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             # ----- Task Operations -----
             case "list_tasks":
                 tasks = list_tasks(arguments["section"])
-                output = format_task_list(tasks, arguments["section"])
+                output = format_task_list(
+                    tasks,
+                    arguments["section"],
+                    detail=arguments.get("detail", "index"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             case "get_task":
@@ -677,13 +780,12 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             case "search_tasks":
                 tasks = search_tasks(arguments["query"])
-                # A task hidden from the parser makes search silently miss it,
-                # or return the task that absorbed it. Say so.
-                output = "\n".join(
-                    [
-                        format_search_results(tasks, "task"),
-                        *format_unparsed_warning(find_unparsed_tasks()),
-                    ]
+                output = format_task_search(
+                    tasks,
+                    arguments["query"],
+                    detail=arguments.get("detail", "snippet"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
                 )
                 return [TextContent(type="text", text=output)]
 
@@ -692,7 +794,13 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 date_str = arguments.get("date", date.today().isoformat())
                 target_date = date.fromisoformat(date_str)
                 entries = parse_journal_entries(get_journal_path(target_date))
-                output = format_journal_list(entries, date_str)
+                output = format_journal_list(
+                    entries,
+                    date_str,
+                    detail=arguments.get("detail", "index"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             case "get_journal_entry":
@@ -751,13 +859,36 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     arguments["query"],
                     arguments.get("days_back", 30),
                 )
-                output = format_search_results(entries, "journal entry")
+                output = format_journal_search(
+                    entries,
+                    arguments["query"],
+                    detail=arguments.get("detail", "snippet"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
+                return [TextContent(type="text", text=output)]
+
+            case "list_journal_dates":
+                dates = list_journal_dates(
+                    arguments.get("since", ""),
+                    arguments.get("until", ""),
+                )
+                output = format_journal_dates(
+                    dates,
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             # ----- Project Operations -----
             case "list_projects":
                 projects = list_projects(arguments.get("status"))
-                output = format_project_list(projects)
+                output = format_project_list(
+                    projects,
+                    detail=arguments.get("detail", "index"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             case "get_project":
@@ -796,7 +927,13 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             case "search_projects":
                 projects = search_projects(arguments["query"])
-                output = format_search_results(projects, "project")
+                output = format_project_search(
+                    projects,
+                    arguments["query"],
+                    detail=arguments.get("detail", "snippet"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             case "link_task_to_project":
