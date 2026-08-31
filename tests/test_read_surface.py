@@ -215,7 +215,7 @@ class TestJournalDateIndex:
         journal = temp_org_dir / "journal"
         for name in ("20260829", "20260830", "20260831.org"):
             (journal / name).write_text(
-                f"* day\n** 09:00 First entry\n- a\n** 10:00 Second entry\n- b\n"
+                "* day\n** 09:00 First entry\n- a\n** 10:00 Second entry\n- b\n"
             )
         for junk in (
             "20260828~",  # Emacs backup

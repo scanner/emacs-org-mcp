@@ -81,6 +81,7 @@ emacs-task-journal-mcp/
 │   ├── orgmunge_patch.py  # Line-oriented fix for orgmunge's drawer lexer
 │   ├── projects.py        # Project CRUD (manual parsing)
 │   ├── properties.py      # Canonical :PROPERTIES: drawer format
+│   ├── results.py         # Shared result envelope: detail levels, paging
 │   ├── validation.py      # Heading-level validation, block escaping
 │   ├── versioning.py      # Git auto-commit of org file changes
 │   └── utils.py           # Timestamps, atomic file I/O, ediff bridge
@@ -248,6 +249,52 @@ cycle after that is a fixed point. Regression tests are in
 **Known gap**: orgmunge also drops blank lines between sections on every
 write, so whole-file round trips are still not byte-stable. That is tracked
 separately and drawer formatting cannot fix it.
+
+### Bounded Read Surface (`mcp_server/results.py`)
+
+Every list and search tool renders through one envelope, so there is a single
+convention to learn: `detail`, `limit`, `offset`, and a response that states
+how to fetch the next page.
+
+| level | returns | default page |
+|-------|---------|--------------|
+| `index` | one line per record | 50 |
+| `snippet` | that line plus matching lines, ±1 context | 10 |
+| `full` | the whole record | 3 |
+
+Each level costs roughly 5× the lines of the one below, so the default page
+shrinks to match and a response stays about the same size whichever level was
+asked for. Naming a `limit` overrides this. `snippet` is the default for
+search — an index line says *which* record matched but never *why*, so search
+would otherwise always cost a second, blind fetch.
+
+Every line carries a size hint (`[47L 1.2k]`) because record sizes are skewed
+— journal entries run p50 = 11 lines, max = 927 — so a full read is usually
+cheap and occasionally catastrophic, and the caller should be able to tell
+which before asking.
+
+`render()` takes **`warnings` as an explicit slot**, not something callers
+append. The report of tasks the parser cannot see is a data-loss guarantee,
+and anything appended below a result body can be paged past. It is emitted
+above the results on every page, including an empty one — which is precisely
+when it matters, since the tasks may be missing rather than absent.
+
+Three contract decisions: `snippet` without a query degrades to `index` rather
+than erroring, so a parameter's validity does not depend on which tool it was
+passed to; an offset past the end says so and gives the total, since an empty
+page is otherwise indistinguishable from no matches; `Record` splits into
+prefix/title/suffix so a long line is trimmed at the title and never at the
+reference a follow-up call needs.
+
+`results.py` imports nothing from `tasks`, `journal` or `projects` — adapters
+live in those modules, so the envelope stays free of the record types.
+
+**A tool description is part of the API contract.** `list_tasks` once
+advertised "Returns … full content" while returning one line per task, and an
+agent used shell commands rather than pay for a call it believed was
+expensive. `tests/test_read_surface.py` pins the *claim* — records carry long
+bodies and each listing must stay inside a per-record line budget — because
+asserting on wording is keyword whack-a-mole.
 
 ### Git Versioning (`mcp_server/versioning.py`)
 
@@ -447,6 +494,7 @@ Key elements:
 | `create_journal_entry` | Create new entry |
 | `update_journal_entry` | Update existing entry |
 | `search_journal` | Search entries across recent days |
+| `list_journal_dates` | List which dates have entries, with counts and sizes |
 
 ### Project Tools
 
