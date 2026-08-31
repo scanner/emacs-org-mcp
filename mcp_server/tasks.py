@@ -158,7 +158,25 @@ def heading_to_org_string(heading: Heading) -> str:
     )
     tags = heading.headline.tags
     tags_str = f" :{':'.join(tags)}:" if tags else ""
-    lines.append(f"{stars} {todo}{title}{tags_str}")
+
+    # A headline is "STARS TODO [#PRIORITY] title [cookie] :tags:", and
+    # orgmunge parses the priority and the progress cookie out of the title
+    # into their own attributes. Rebuilding from the title alone therefore
+    # drops both, which deletes them from the file on the next write --
+    # get_task would hand back a task whose cookies had already gone, and
+    # writing that straight back is what erodes a task over successive edits.
+    # Both attributes arrive already bracketed, so they only need placing.
+    #
+    # NOTE: neither is a plain string. An absent priority is an object that is
+    #       still truthy and only renders empty, so the test has to be on the
+    #       rendered text rather than on the attribute.
+    #
+    priority = str(heading.headline.priority or "")
+    priority_str = f"{priority} " if priority else ""
+    cookie = str(heading.headline.cookie or "")
+    cookie_str = f" {cookie}" if cookie else ""
+
+    lines.append(f"{stars} {todo}{priority_str}{title}{cookie_str}{tags_str}")
 
     # Render :PROPERTIES: drawer immediately after the headline
     props: dict = (

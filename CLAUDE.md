@@ -235,7 +235,15 @@ alone; so are unterminated drawers and ones containing unrecognised lines.
 
 `heading_to_org_string()` uses the same `format_drawer()`, so what `get_task`
 returns is byte-identical to what is on disk and a read-modify-write cycle
-converges.
+converges. The headline matters as much as the drawer here: it is rebuilt as
+`STARS TODO [#PRIORITY] title [cookie] :tags:`, and orgmunge parses the
+priority and progress cookie out of the title into separate attributes, so
+rebuilding from the title alone silently deleted both on every write. Note
+neither attribute is a plain string — an absent priority is still truthy and
+only renders empty, so tests must be on the rendered text. The first write
+after a read does legitimately differ, because it stamps `:MODIFIED:`; every
+cycle after that is a fixed point. Regression tests are in
+`tests/test_heading_roundtrip.py`.
 
 **Known gap**: orgmunge also drops blank lines between sections on every
 write, so whole-file round trips are still not byte-stable. That is tracked
@@ -494,7 +502,9 @@ Expected behavior:
 
 ## Known Limitations
 
-- No support for org-mode priorities (`[#A]`, `[#B]`, `[#C]`) in parsing (preserved in content)
+- No support for org-mode priorities (`[#A]`, `[#B]`, `[#C]`) or progress
+  cookies (`[1/3]`, `[50%]`) as *queryable* fields — they are not parsed into
+  `Task`, but they do survive a read-modify-write cycle unchanged
 - No support for scheduled/deadline timestamps in parsing (preserved in content)
 - Journal files use manual parsing, not orgmunge
 - No concurrent access protection (relies on single-user access pattern)
