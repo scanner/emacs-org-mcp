@@ -44,8 +44,19 @@ DetailLevel = Literal["index", "snippet", "full"]
 
 DETAIL_LEVELS: tuple[str, ...] = ("index", "snippet", "full")
 
-# Results returned when the caller does not ask for a specific number.
+# Results returned when the caller does not ask for a specific number. Each
+# detail level costs roughly five times the lines of the one below it, so the
+# default page shrinks to match and a response stays about the same size
+# whichever level was asked for. Naming a limit overrides this entirely.
 DEFAULT_LIMIT = 50
+DEFAULT_SNIPPET_LIMIT = 10
+DEFAULT_FULL_LIMIT = 3
+
+DEFAULT_LIMIT_FOR: dict[str, int] = {
+    "index": DEFAULT_LIMIT,
+    "snippet": DEFAULT_SNIPPET_LIMIT,
+    "full": DEFAULT_FULL_LIMIT,
+}
 
 # Lines of context shown either side of a matching line at ``snippet``.
 SNIPPET_CONTEXT = 1
@@ -228,7 +239,7 @@ def render(
     tool: str,
     header: str,
     detail: DetailLevel = "index",
-    limit: int = DEFAULT_LIMIT,
+    limit: int | None = None,
     offset: int = 0,
     query: str = "",
     order: str = "",
@@ -247,7 +258,9 @@ def render(
             back to ``index`` when there is no query to match against, which
             is every list tool -- rejecting it instead would make a parameter's
             validity depend on which tool it was passed to.
-        limit: Maximum records to render
+        limit: Maximum records to render. None takes the default for the
+            detail level in effect, which keeps a response about the same
+            size whichever level was asked for.
         offset: Records to skip
         query: The active query, used to build snippets
         order: Ordering in effect, named in the header when given
@@ -270,6 +283,11 @@ def render(
 
     if detail == "snippet" and not query:
         detail = "index"
+
+    # Resolved after the fallback above, so a snippet request with no query
+    # gets the index page size it will actually be rendered at.
+    if limit is None:
+        limit = DEFAULT_LIMIT_FOR.get(detail, DEFAULT_LIMIT)
 
     lines: list[str] = []
 

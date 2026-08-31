@@ -21,7 +21,11 @@ from pathlib import Path
 import pytest
 from pytest_check import check
 
-from mcp_server.journal import format_journal_list, parse_journal_entries
+from mcp_server.journal import (
+    format_journal_list,
+    list_journal_dates,
+    parse_journal_entries,
+)
 from mcp_server.projects import format_project_list, list_projects
 from mcp_server.tasks import format_task_list, list_tasks, search_tasks
 from mcp_server.tools import format_search_results
@@ -184,3 +188,70 @@ class TestListingsAreBounded:
         check_bounded(
             format_project_list(projects), "list_projects", len(projects)
         )
+
+
+########################################################################
+########################################################################
+#
+class TestJournalDateIndex:
+    """Tests for the calendar of days that have journal entries."""
+
+    ####################################################################
+    #
+    def test_only_real_journal_files_count_as_days(self, temp_org_dir: Path):
+        """
+        GIVEN: a journal directory holding real day files alongside the
+               Emacs backups, lock files and .bak files that accumulate
+               beside them
+        WHEN:  the days with entries are listed
+        THEN:  only the real day files are reported, newest first, each with
+               its entry count and size
+
+        This scans the directory rather than walking a day at a time, which
+        is what makes an unbounded range affordable and what makes the
+        filename filter load-bearing. The live journal directory holds 564
+        entries for 514 real days, so a loose glob would invent them.
+        """
+        journal = temp_org_dir / "journal"
+        for name in ("20260829", "20260830", "20260831.org"):
+            (journal / name).write_text(
+                f"* day\n** 09:00 First entry\n- a\n** 10:00 Second entry\n- b\n"
+            )
+        for junk in (
+            "20260828~",  # Emacs backup
+            "#20260827#",  # Emacs lock file
+            "20260826.20260826_120000.bak",  # our own backup
+            "notes.txt",  # not a journal file at all
+        ):
+            (journal / junk).write_text("* day\n** 09:00 Should not count\n")
+
+        dates = list_journal_dates()
+
+        with check:
+            assert [d for d, _, _, _ in dates] == [
+                "2026-08-31",
+                "2026-08-30",
+                "2026-08-29",
+            ], "newest first, and only real day files"
+
+        for _, entries, lines, chars in dates:
+            with check:
+                assert entries == 2, "entry count comes from the real parser"
+            with check:
+                assert lines > 0 and chars > 0, "size hint is populated"
+
+    ####################################################################
+    #
+    def test_a_date_range_bounds_the_listing(self, temp_org_dir: Path):
+        """
+        GIVEN: journal files spanning several days
+        WHEN:  the listing is bounded by since and until
+        THEN:  only days inside the range are returned, inclusive at both ends
+        """
+        journal = temp_org_dir / "journal"
+        for day in ("20260801", "20260815", "20260831"):
+            (journal / day).write_text("* day\n** 09:00 Entry\n- a\n")
+
+        bounded = list_journal_dates(since="2026-08-15", until="2026-08-31")
+
+        assert [d for d, _, _, _ in bounded] == ["2026-08-31", "2026-08-15"]

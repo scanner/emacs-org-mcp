@@ -10,6 +10,12 @@ from pathlib import Path
 
 # project imports
 from mcp_server.config import global_state
+from mcp_server.results import (
+    DetailLevel,
+    Record,
+    format_size,
+    render,
+)
 from mcp_server.utils import (
     backup_file,
     format_simple_diff,
@@ -23,6 +29,16 @@ from mcp_server.validation import validate_journal_content
 # to keep the import pattern consistent with tasks.py; currently unused
 # but retained intentionally.
 _ = get_current_timestamp
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+# A real journal file is exactly YYYYMMDD, optionally with a .org suffix. The
+# journal directory also accumulates Emacs backups (20260814~), lock files
+# (#20260713#) and the server's own .bak files, none of which are journal days.
+JOURNAL_FILENAME_RE = re.compile(r"^\d{8}(\.org)?$")
 
 
 # =============================================================================
@@ -461,6 +477,64 @@ def update_journal_entry(
 
 ###############################################################################
 #
+def list_journal_dates(
+    since: str = "", until: str = ""
+) -> list[tuple[str, int, int, int]]:
+    """
+    List the dates that have journal entries, newest first.
+
+    Args:
+        since: Earliest date to include, ``YYYY-MM-DD``. Empty means no bound.
+        until: Latest date to include, ``YYYY-MM-DD``. Empty means no bound.
+
+    Returns:
+        Tuples of (``YYYY-MM-DD``, entry count, lines, characters), so a
+        caller can tell a one-line day from a thousand-line one before asking
+        for it.
+
+    Note:
+        Scans the directory rather than walking a day at a time, which is what
+        makes an unbounded range affordable. That means filtering filenames
+        strictly: alongside 514 real files the journal directory also holds
+        Emacs backups, lock files and the server's own ``.bak`` files, and a
+        loose glob would report all of them as journal days.
+
+        This exists because the alternative was listing the directory by hand.
+        Every other journal tool needs a date the caller already knows.
+    """
+    journal_dir = global_state.config.journal_dir
+    if not journal_dir.exists():
+        return []
+
+    dates: list[tuple[str, int, int, int]] = []
+    for path in journal_dir.iterdir():
+        if not JOURNAL_FILENAME_RE.match(path.name):
+            continue
+
+        day = path.stem
+        iso = f"{day[:4]}-{day[4:6]}-{day[6:8]}"
+        if since and iso < since:
+            continue
+        if until and iso > until:
+            continue
+
+        # Count through the real parser rather than a second rule of our own,
+        # so this number is the one list_journal_entries would return.
+        text = path.read_text(encoding="utf-8", errors="replace")
+        dates.append(
+            (
+                iso,
+                len(parse_journal_entries(path)),
+                text.count("\n") + 1,
+                len(text),
+            )
+        )
+
+    return sorted(dates, reverse=True)
+
+
+###############################################################################
+#
 def search_journal(query: str, days_back: int = 30) -> list[JournalEntry]:
     """
     Search journal entries within recent days.
@@ -549,31 +623,145 @@ def format_journal_update_result(
 
 ###############################################################################
 #
-def format_journal_list(entries: list[JournalEntry], date_str: str) -> str:
+def format_journal_dates(
+    dates: list[tuple[str, int, int, int]],
+    limit: int | None = None,
+    offset: int = 0,
+) -> str:
+    """
+    Format the calendar of days that have journal entries.
+
+    Args:
+        dates: Tuples of (date, entry count, lines, characters)
+        limit: Maximum days to show; None takes the level's default
+        offset: Days to skip
+
+    Returns:
+        A rendered page, newest day first.
+
+    Note:
+        The size is the file's, so a caller can tell a one-line day from a
+        thousand-line one before asking for it.
+    """
+    records = [
+        Record(
+            ref=iso,
+            prefix=iso,
+            title=f"{count} entr{'y' if count == 1 else 'ies'}",
+            suffix=format_size(lines, chars),
+        )
+        for iso, count, lines, chars in dates
+    ]
+
+    return render(
+        records,
+        tool="list_journal_dates",
+        header="Journal dates",
+        detail="index",
+        limit=limit,
+        offset=offset,
+    )
+
+
+###############################################################################
+#
+def journal_entry_to_record(
+    entry: JournalEntry, show_date: bool = False
+) -> Record:
+    """
+    Adapt a journal entry to the shared result envelope.
+
+    Args:
+        entry: The entry to adapt
+        show_date: Include the entry's date in its columns. A single day's
+            listing carries the date in its header, so repeating it on every
+            line only costs tokens; a search spanning days needs it.
+
+    Returns:
+        A :class:`Record` with the entry's columns rendered.
+    """
+    day = entry.file_date
+    dated = f"{day[:4]}-{day[4:6]}-{day[6:8]} " if show_date else ""
+
+    return Record(
+        ref=f"{day} {entry.time}",
+        prefix=f"{dated}{entry.time}",
+        title=entry.headline,
+        tags=list(entry.tags),
+        content=entry.content,
+    )
+
+
+###############################################################################
+#
+def format_journal_list(
+    entries: list[JournalEntry],
+    date_str: str,
+    detail: DetailLevel = "index",
+    limit: int | None = None,
+    offset: int = 0,
+) -> str:
     """
     Format a list of journal entries for display.
 
     Args:
         entries: List of journal entries to format
         date_str: Date string for the header
+        detail: Envelope detail level
+        limit: Maximum entries to show; None takes the level's default
+        offset: Entries to skip
 
     Returns:
-        Formatted entry list with date header and entry summaries
+        A rendered page.
+
+    Note:
+        This used to emit the first two lines of every body, which was a
+        preview nobody chose -- too little to answer a question and too much
+        to be free. Bodies now arrive only at a level the caller asked for,
+        with a size hint on each line so the choice is an informed one.
     """
-    if not entries:
-        return f"No journal entries for {date_str}"
+    return render(
+        [journal_entry_to_record(entry) for entry in entries],
+        tool="list_journal_entries",
+        header=f"Journal entries for {date_str}",
+        detail=detail,
+        limit=limit,
+        offset=offset,
+    )
 
-    lines = [f"Journal Entries for {date_str}", "=" * 30, ""]
 
-    for entry in entries:
-        tags = f" :{':'.join(entry.tags)}:" if entry.tags else ""
-        lines.append(f"  {entry.time}  {entry.headline}{tags}")
-        if entry.content.strip():
-            content_preview = entry.content.strip().split("\n")[:2]
-            for content_line in content_preview:
-                lines.append(f"         {content_line}")
+###############################################################################
+#
+def format_journal_search(
+    entries: list[JournalEntry],
+    query: str,
+    detail: DetailLevel = "snippet",
+    limit: int | None = None,
+    offset: int = 0,
+) -> str:
+    """
+    Format journal search results.
 
-    return "\n".join(lines)
+    Args:
+        entries: Matching entries
+        query: The query that produced them, used to build snippets
+        detail: Envelope detail level, defaulting to snippet
+        limit: Maximum matches to show; None takes the level's default
+        offset: Matches to skip
+
+    Returns:
+        A rendered page. Entries are dated, since a search spans days and
+        when something was written is usually half the answer.
+    """
+    return render(
+        [journal_entry_to_record(entry, show_date=True) for entry in entries],
+        tool="search_journal",
+        header=f'search_journal("{query}")',
+        detail=detail,
+        limit=limit,
+        offset=offset,
+        query=query,
+    )
 
 
 ###############################################################################

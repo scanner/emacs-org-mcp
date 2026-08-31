@@ -14,10 +14,13 @@ from mcp_server.config import global_state, server
 from mcp_server.journal import (
     create_journal_entry,
     format_journal_create_result,
+    format_journal_dates,
     format_journal_detail,
     format_journal_list,
+    format_journal_search,
     format_journal_update_result,
     get_journal_path,
+    list_journal_dates,
     parse_journal_entries,
     search_journal,
     update_journal_entry,
@@ -28,6 +31,7 @@ from mcp_server.projects import (
     format_project_create_result,
     format_project_detail,
     format_project_list,
+    format_project_search,
     format_project_update_result,
     get_project,
     link_task_to_project,
@@ -342,7 +346,8 @@ async def handle_list_tools() -> list[Tool]:
                     "date": {
                         "type": "string",
                         "description": "Date in YYYY-MM-DD format. Defaults to today.",
-                    }
+                    },
+                    **envelope_properties("index"),
                 },
             },
         ),
@@ -487,8 +492,39 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Days to search back (default 30, searches from today backwards)",
                     },
+                    **envelope_properties("snippet"),
                 },
                 "required": ["query"],
+            },
+        ),
+        Tool(
+            name="list_journal_dates",
+            description=(
+                "List which dates have journal entries, newest first, with the entry count and size of each "
+                "day. Returns one line per day and no entry content. Use this to find out what days exist "
+                "before reading any of them -- every other journal tool needs a date you already know. "
+                "Bound the range with since/until when you only care about a period."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "since": {
+                        "type": "string",
+                        "description": "Earliest date to include, YYYY-MM-DD. Omit for no lower bound.",
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "Latest date to include, YYYY-MM-DD. Omit for no upper bound.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum days to return (default 50).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Days to skip, for paging (default 0).",
+                    },
+                },
             },
         ),
         # ----- Project Tools -----
@@ -508,6 +544,7 @@ async def handle_list_tools() -> list[Tool]:
                         "description": "Filter by project status",
                         "enum": list(VALID_PROJECT_STATUSES),
                     },
+                    **envelope_properties("index"),
                 },
             },
         ),
@@ -614,6 +651,7 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Search query (matches titles and content)",
                     },
+                    **envelope_properties("snippet"),
                 },
                 "required": ["query"],
             },
@@ -682,7 +720,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     tasks,
                     arguments["section"],
                     detail=arguments.get("detail", "index"),
-                    limit=arguments.get("limit", DEFAULT_LIMIT),
+                    limit=arguments.get("limit"),
                     offset=arguments.get("offset", 0),
                 )
                 return [TextContent(type="text", text=output)]
@@ -746,7 +784,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     tasks,
                     arguments["query"],
                     detail=arguments.get("detail", "snippet"),
-                    limit=arguments.get("limit", DEFAULT_LIMIT),
+                    limit=arguments.get("limit"),
                     offset=arguments.get("offset", 0),
                 )
                 return [TextContent(type="text", text=output)]
@@ -756,7 +794,13 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 date_str = arguments.get("date", date.today().isoformat())
                 target_date = date.fromisoformat(date_str)
                 entries = parse_journal_entries(get_journal_path(target_date))
-                output = format_journal_list(entries, date_str)
+                output = format_journal_list(
+                    entries,
+                    date_str,
+                    detail=arguments.get("detail", "index"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             case "get_journal_entry":
@@ -815,13 +859,36 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     arguments["query"],
                     arguments.get("days_back", 30),
                 )
-                output = format_search_results(entries, "journal entry")
+                output = format_journal_search(
+                    entries,
+                    arguments["query"],
+                    detail=arguments.get("detail", "snippet"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
+                return [TextContent(type="text", text=output)]
+
+            case "list_journal_dates":
+                dates = list_journal_dates(
+                    arguments.get("since", ""),
+                    arguments.get("until", ""),
+                )
+                output = format_journal_dates(
+                    dates,
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             # ----- Project Operations -----
             case "list_projects":
                 projects = list_projects(arguments.get("status"))
-                output = format_project_list(projects)
+                output = format_project_list(
+                    projects,
+                    detail=arguments.get("detail", "index"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             case "get_project":
@@ -860,7 +927,13 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             case "search_projects":
                 projects = search_projects(arguments["query"])
-                output = format_search_results(projects, "project")
+                output = format_project_search(
+                    projects,
+                    arguments["query"],
+                    detail=arguments.get("detail", "snippet"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             case "link_task_to_project":

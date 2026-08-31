@@ -16,7 +16,6 @@ from orgmunge.classes import Heading
 from mcp_server.config import global_state
 from mcp_server.properties import format_drawer
 from mcp_server.results import (
-    DEFAULT_LIMIT,
     DetailLevel,
     Record,
     render,
@@ -1321,7 +1320,7 @@ def format_task_list(
     tasks: list[Task],
     section: str,
     detail: DetailLevel = "index",
-    limit: int = DEFAULT_LIMIT,
+    limit: int | None = None,
     offset: int = 0,
 ) -> str:
     """
@@ -1331,7 +1330,7 @@ def format_task_list(
         tasks: List of tasks to format, in file order
         section: Section name for the header
         detail: Envelope detail level
-        limit: Maximum tasks to show
+        limit: Maximum tasks to show; None takes the level's default
         offset: Tasks to skip
 
     Returns:
@@ -1356,7 +1355,7 @@ def format_task_search(
     tasks: list[Task],
     query: str,
     detail: DetailLevel = "snippet",
-    limit: int = DEFAULT_LIMIT,
+    limit: int | None = None,
     offset: int = 0,
 ) -> str:
     """
@@ -1367,7 +1366,7 @@ def format_task_search(
         query: The query that produced them, used to build snippets
         detail: Envelope detail level, defaulting to snippet so a result shows
             why it matched and not merely that it did
-        limit: Maximum matches to show
+        limit: Maximum matches to show; None takes the level's default
         offset: Matches to skip
 
     Returns:
