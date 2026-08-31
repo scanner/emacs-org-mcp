@@ -116,7 +116,9 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="list_tasks",
             description=(
-                "List all tasks in a section of tasks.org. Returns task names, headlines, status, and full content. "
+                "List all tasks in a section of tasks.org. Returns one compact line per task: status, ticket ID, "
+                "headline and CUSTOM_ID. Task bodies are NOT included -- call get_task for a task's full content. "
+                "Also reports any tasks present in the file that the org parser cannot see. "
                 "Use this to check for existing tasks before creating new ones, or to get an overview of work in progress. "
                 "For detailed format specifications, read the emacs-org://guide/task-format resource."
             ),
@@ -260,7 +262,10 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="search_tasks",
             description=(
-                "Search tasks by query string across all sections. Returns complete matching tasks. "
+                "Search tasks by query string across all sections. Case-insensitive substring match on headline "
+                "and content. Returns one compact line per matching task: status, ticket ID and headline. Task "
+                "bodies are NOT included -- call get_task for full content. Also reports any tasks the org parser "
+                "cannot see. "
                 "Use this to check for existing tasks before creating new ones, or to find tasks related to a topic. "
                 ""
             ),
@@ -279,7 +284,9 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="list_journal_entries",
             description=(
-                "List all journal entries for a specific date. Returns entry times, headlines, content, and tags. "
+                "List all journal entries for a specific date. Returns one line per entry -- time, headline and "
+                "tags -- followed by at most the first two lines of the body as a preview. Full bodies are NOT "
+                "included; call get_journal_entry for a complete entry. "
                 "Use this to check what's already logged before creating new entries to avoid duplicates. "
                 "For format specifications, read emacs-org://guide/journal-format."
             ),
@@ -415,7 +422,10 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="search_journal",
             description=(
-                "Search journal entries by query string across recent days. Returns complete matching entries. "
+                "Search journal entries by query string across recent days. Case-insensitive substring match on "
+                "headline and body. Returns one compact line per matching entry -- time, headline, tags and date. "
+                "Entry bodies are NOT included; call get_journal_entry for full content. Results are not limited "
+                "yet, so a common word over a long window can return a line for every entry that contains it. "
                 "Use this to find past work on a topic, review recent activity, or look up when something was done. "
                 "Searches last 30 days by default. "
                 ""
@@ -439,8 +449,9 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="list_projects",
             description=(
-                "List all projects, optionally filtered by status. Returns project titles, slugs, "
-                "status, and description previews. "
+                "List all projects, optionally filtered by status. Returns one line per project -- status, "
+                "title and slug -- plus a one-line description preview. Full project content is NOT included; "
+                "call get_project for that. "
                 "For detailed format specifications, read the emacs-org://guide/project-format resource."
             ),
             inputSchema={
@@ -546,7 +557,9 @@ async def handle_list_tools() -> list[Tool]:
             name="search_projects",
             description=(
                 "Search across all projects by query string. Case-insensitive substring match "
-                "on project titles and all section content. Returns matching projects."
+                "on project titles and all section content. Returns one compact line per matching project: "
+                "status, title and slug. Project content is NOT included -- call get_project for a project's "
+                "full content."
             ),
             inputSchema={
                 "type": "object",
