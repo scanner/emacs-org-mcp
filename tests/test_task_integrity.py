@@ -9,8 +9,8 @@ remove a task it was not asked to touch, tasks the parser cannot see are
 reported rather than silently omitted, and the previous file is always
 recoverable from a .bak.
 
-Two distinct corruptions can hide a task from the parser, and both are
-exercised here:
+Three distinct corruptions can hide a heading from the parser, and all three
+are exercised here:
 
 - **indented heading** — a leading space makes org read ``** TODO Task`` as
   body text, folding the whole task into its predecessor's subtree. This is
@@ -18,13 +18,27 @@ exercised here:
 - **phantom heading** — orgmunge does not honour ``#+begin_src`` fencing, so a
   ``* Tasks`` line inside a block becomes a real level-1 heading and
   re-parents every task after it.
+- **false drawer** — nothing in orgmunge's drawer pattern stops at a line
+  boundary, so a body line starting with a colon opens a drawer that runs to
+  the next ``:END:`` anywhere later in the file and swallows the headings in
+  between.
+  This is the mechanism of the 2026-08-28 incident, in which
+  ``* Completed Tasks`` was destroyed. Fixed in
+  :mod:`mcp_server.orgmunge_patch`.
 """
 
 import contextlib
 from pathlib import Path
 
 import pytest
+from orgmunge import Org
 
+from mcp_server.orgmunge_patch import (
+    FIXED_DRAWER_PATTERN,
+    OrgmungePatchError,
+    apply_drawer_fix,
+    shipped_drawer_pattern,
+)
 from mcp_server.tasks import (
     create_task,
     find_lost_sections,
@@ -103,6 +117,38 @@ PHANTOM_HEADING_FILE = (
     "*** Description\nUNIQUE_VICTIM_STRING\n"
     "* Completed Tasks\n"
 )
+
+
+########################################################################
+#
+def false_drawer_file(trigger: str) -> str:
+    """
+    Build a tasks.org where ``trigger`` opens a drawer orgmunge cannot close.
+
+    Args:
+        trigger: A body line whose first non-blank character is a colon
+
+    Returns:
+        Org text with the trigger in the last active task's body and a
+        completed task, carrying a properties drawer, below the
+        "Completed Tasks" heading.
+
+    Note:
+        That trailing drawer is half the trigger.  Its ``:END:`` is what the
+        false drawer runs forward to, and "* Completed Tasks" is what it
+        crosses on the way.  Without it the file parses correctly either way.
+    """
+    return (
+        "* Tasks\n"
+        "** TODO LAST-1 The last active task\n"
+        ":PROPERTIES:\n   :CUSTOM_ID: task-last-active\n:END:\n"
+        "*** Notes\n"
+        f"{trigger}\n"
+        "* Completed Tasks\n"
+        "** DONE OLD-1 A finished task\n"
+        ":PROPERTIES:\n   :CUSTOM_ID: task-old-done\n:END:\n"
+        "*** Description\nUNIQUE_SWALLOWED_STRING\n"
+    )
 
 
 ########################################################################
@@ -492,3 +538,274 @@ class TestBackupRetention:
         create_task("Tasks", make_task("Brand new", "task-new"))
 
         assert big_then_ordinary.with_suffix(".org.bak").read_text() == original
+
+
+########################################################################
+########################################################################
+#
+class TestFalseDrawerCorruption:
+    """
+    Tests that a colon-led body line cannot hide the sections below it.
+
+    orgmunge tokenizes a drawer with a pattern compiled ``re.DOTALL``, so a
+    body line whose first non-blank character is a colon opens a drawer that
+    runs to the next ``:END:`` anywhere later in the file, swallowing every
+    heading in between.  These pin the fix in
+    :mod:`mcp_server.orgmunge_patch`.
+
+    The trailing ``:PROPERTIES:`` drawer in the fixture is the necessary
+    second half of the trigger, not decoration -- see the negative control
+    below, which is the same file without it.
+    """
+
+    ####################################################################
+    #
+    @pytest.mark.parametrize(
+        "trigger",
+        [
+            pytest.param(
+                ": 1 run: 19 MS | 2: 4 | 3: 3 | 4: 6 | 5: 4 | 6: 4 | 7: 8",
+                id="real-histogram-line",
+            ),
+            pytest.param(": a: b", id="inner-colon"),
+            pytest.param(": no inner colon here", id="no-inner-colon"),
+            pytest.param(":FOO:", id="bare-colon-word-colon"),
+            pytest.param("  : foo: bar", id="indented"),
+        ],
+    )
+    def test_a_colon_led_body_line_does_not_swallow_later_sections(
+        self, temp_org_dir: Path, trigger: str
+    ):
+        """
+        GIVEN: a tasks.org whose last active task has a body line beginning
+               with a colon, and a completed task with a properties drawer
+               below the "Completed Tasks" heading
+        WHEN:  the file is parsed
+        THEN:  both sections resolve, the completed task is filed under
+               "Completed Tasks" with its body intact rather than reported as
+               active, and nothing is reported lost
+        """
+        tasks_file = temp_org_dir / "tasks.org"
+        tasks_file.write_text(false_drawer_file(trigger))
+
+        assert find_section(get_org(), "Completed Tasks") is not None
+
+        active = [task.custom_id for task in list_tasks("Tasks")]
+        completed = list_tasks("Completed Tasks")
+
+        assert active == ["task-last-active"]
+        assert [task.custom_id for task in completed] == ["task-old-done"]
+        assert "UNIQUE_SWALLOWED_STRING" in completed[0].content
+
+        assert find_lost_sections() == []
+        assert find_unparsed_tasks() == []
+
+    ####################################################################
+    #
+    def test_body_text_is_not_attributed_to_the_task_above(
+        self, temp_org_dir: Path
+    ):
+        """
+        GIVEN: a tasks.org where a colon-led body line precedes the
+               "Completed Tasks" heading
+        WHEN:  text belonging to the first task under that heading is searched
+               for
+        THEN:  that task is returned, not the active task above it
+
+        The swallowed task's body was folded into its predecessor's subtree,
+        so searching for text unique to it answered with the wrong task --
+        which reads as a correct hit and is the symptom most likely to be
+        acted on.
+        """
+        tasks_file = temp_org_dir / "tasks.org"
+        tasks_file.write_text(false_drawer_file(": a: b"))
+
+        hits = [task.custom_id for task in search_tasks("UNIQUE_SWALLOWED")]
+
+        assert hits == ["task-old-done"]
+
+    ####################################################################
+    #
+    def test_the_trigger_needs_a_later_drawer_to_close_on(
+        self, temp_org_dir: Path
+    ):
+        """
+        GIVEN: the same colon-led body line, but no properties drawer
+               anywhere after it
+        WHEN:  the file is parsed
+        THEN:  both sections resolve
+
+        Negative control.  This file parses correctly with or without the
+        fix, because the false drawer never finds an ":END:" to close on.
+        A fixture that forgot the trailing drawer would pass whether or not
+        the bug were fixed, so the pair is what pins the real condition.
+        """
+        tasks_file = temp_org_dir / "tasks.org"
+        tasks_file.write_text(
+            "* Tasks\n"
+            "** TODO LAST-1 The last active task\n"
+            ":PROPERTIES:\n   :CUSTOM_ID: task-last-active\n:END:\n"
+            "*** Notes\n"
+            ": a: b\n"
+            "* Completed Tasks\n"
+            "** DONE OLD-1 A finished task\n"
+        )
+
+        assert find_section(get_org(), "Completed Tasks") is not None
+
+    ####################################################################
+    #
+    def test_updating_the_task_above_does_not_destroy_the_section(
+        self, temp_org_dir: Path
+    ):
+        """
+        GIVEN: a tasks.org whose last active task has a colon-led body line
+        WHEN:  that task is updated
+        THEN:  the "Completed Tasks" heading and the task under it are still
+               in the file
+
+        This is the 2026-08-28 incident: the write path took the task's
+        extent from the mis-parse and wrote over everything the false drawer
+        had swallowed.
+        """
+        tasks_file = temp_org_dir / "tasks.org"
+        tasks_file.write_text(false_drawer_file(": a: b"))
+
+        update_task(
+            "task-last-active",
+            "** TODO LAST-1 The last active task\n"
+            ":PROPERTIES:\n   :CUSTOM_ID: task-last-active\n:END:\n"
+            "*** Notes\nRewritten.\n",
+        )
+
+        after = tasks_file.read_text()
+
+        assert "\n* Completed Tasks" in after
+        assert "DONE OLD-1" in after
+        assert "UNIQUE_SWALLOWED_STRING" in after
+
+
+########################################################################
+########################################################################
+#
+class TestSectionHeadingGuard:
+    """
+    Tests that no write may remove a section heading.
+
+    The task guard alone is not enough: when a swallowed region ends before
+    the first task under a heading, every task identity still matches and
+    only the heading dies.
+    """
+
+    ####################################################################
+    #
+    def test_a_write_that_drops_a_section_is_refused(self, temp_org_dir: Path):
+        """
+        GIVEN: a tasks.org with an active and a completed section
+        WHEN:  a write is attempted whose content has lost the completed
+               section, while every task it contains survives
+        THEN:  the write is refused and the file is left unchanged
+        """
+        tasks_file = temp_org_dir / "tasks.org"
+        tasks_file.write_text(
+            make_tasks_org(
+                [make_task("Active one", "task-active")],
+                [make_task("Done one", "task-done", status="DONE")],
+            )
+        )
+        original = tasks_file.read_text()
+
+        # Every task survives here -- only the heading is gone -- so the task
+        # guard has nothing to object to.
+        without_section = Org(
+            "* Tasks\n"
+            "** TODO Active one\n"
+            ":PROPERTIES:\n   :CUSTOM_ID: task-active\n:END:\n"
+            "** DONE Done one\n"
+            ":PROPERTIES:\n   :CUSTOM_ID: task-done\n:END:\n",
+            from_file=False,
+        )
+
+        with pytest.raises(ValueError, match="section heading"):
+            write_tasks_org(without_section, summary="drop a section")
+
+        assert tasks_file.read_text() == original
+
+    ####################################################################
+    #
+    def test_a_recounted_progress_cookie_is_not_a_lost_section(
+        self, temp_org_dir: Path
+    ):
+        """
+        GIVEN: a tasks.org with a high level section carrying a progress
+               cookie
+        WHEN:  a write changes the cookie's counts
+        THEN:  the write is allowed
+
+        The cookie moves as items are checked off; the section does not.
+        """
+        tasks_file = temp_org_dir / "tasks.org"
+        tasks_file.write_text(
+            "* High Level Tasks (in order) [0/1]\n"
+            "- [ ] Something\n"
+            "\n* Tasks\n"
+            "** TODO Active one\n"
+            ":PROPERTIES:\n   :CUSTOM_ID: task-active\n:END:\n"
+            "\n* Completed Tasks\n"
+        )
+
+        recounted = Org(
+            tasks_file.read_text().replace("[0/1]", "[1/1]"), from_file=False
+        )
+
+        write_tasks_org(recounted, summary="recount the cookie")
+
+        assert "[1/1]" in tasks_file.read_text()
+
+
+########################################################################
+########################################################################
+#
+class TestOrgmungePatch:
+    """Tests for the guarded patch of orgmunge's drawer tokenizer."""
+
+    ####################################################################
+    #
+    def test_importing_the_package_applies_the_patch_once(self):
+        """
+        GIVEN: the mcp_server package has been imported
+        WHEN:  orgmunge's drawer pattern is read back, and the patch is then
+               applied a second time
+        THEN:  the pattern is the line-oriented replacement both times
+
+        Importing the package is what applies the patch, so nothing that can
+        reach a parser can reach an unpatched one.  Re-applying has to be a
+        no-op: a second pass would otherwise read the already-fixed pattern,
+        find it is not the known-broken one, and refuse to start.
+        """
+        assert shipped_drawer_pattern() == FIXED_DRAWER_PATTERN
+
+        apply_drawer_fix()
+
+        assert shipped_drawer_pattern() == FIXED_DRAWER_PATTERN
+
+    ####################################################################
+    #
+    def test_an_unrecognised_orgmunge_is_refused(self, mocker):
+        """
+        GIVEN: an orgmunge whose drawer pattern is not the one the patch was
+               written against
+        WHEN:  the patch is applied
+        THEN:  it raises rather than leaving an ineffective patch in place
+
+        A patch that silently stopped applying would return us to losing
+        data, so an upstream change has to be noticed.
+        """
+        mocker.patch("mcp_server.orgmunge_patch._applied", False)
+        mocker.patch(
+            "mcp_server.orgmunge_patch.shipped_drawer_pattern",
+            return_value=r"^something:else:$",
+        )
+
+        with pytest.raises(OrgmungePatchError, match="has changed"):
+            apply_drawer_fix()
