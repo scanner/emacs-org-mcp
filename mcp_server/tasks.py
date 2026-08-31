@@ -15,7 +15,14 @@ from orgmunge.classes import Heading
 # project imports
 from mcp_server.config import global_state
 from mcp_server.properties import format_drawer
+from mcp_server.results import (
+    DEFAULT_LIMIT,
+    DetailLevel,
+    Record,
+    render,
+)
 from mcp_server.utils import (
+    format_age,
     format_simple_diff,
     get_current_timestamp,
     request_ediff_approval,
@@ -1260,33 +1267,124 @@ def format_unparsed_warning(unparsed: list[str]) -> list[str]:
 
 ###############################################################################
 #
-def format_task_list(tasks: list[Task], section: str) -> str:
+def task_to_record(task: Task) -> Record:
+    """
+    Adapt a task to the shared result envelope.
+
+    Args:
+        task: The task to adapt
+
+    Returns:
+        A :class:`Record` with the task's columns rendered.
+
+    Note:
+        The ``:MODIFIED:`` age rides along because position in a section
+        encodes priority: a task drifts down as it goes unpicked, so "near the
+        bottom and untouched for three months" is the judgement being made
+        when scanning a list, and it cannot be made from the headline alone.
+    """
+    ticket = f"[{task.ticket_id}] " if task.ticket_id else ""
+    identity = f"(#{task.custom_id})" if task.custom_id else ""
+    age = format_age(task.modified or task.created)
+
+    return Record(
+        ref=task.custom_id or task.headline,
+        prefix=task.status,
+        title=f"{ticket}{task.headline}",
+        suffix=" ".join(part for part in (identity, age) if part),
+        content=task.content,
+    )
+
+
+###############################################################################
+#
+def task_warnings() -> list[str]:
+    """
+    Return the warning block about tasks and sections the parser cannot see.
+
+    Returns:
+        Lines to hand to :func:`~mcp_server.results.render` as ``warnings``,
+        or an empty list when the file is healthy.
+
+    Note:
+        Every listing and search of tasks must surface this, so it is computed
+        in one place and passed into the envelope rather than appended by each
+        caller. Anything appended after a result body can be paged past, and
+        this is the report that a task has become invisible.
+    """
+    return format_unparsed_warning(find_unparsed_tasks())
+
+
+###############################################################################
+#
+def format_task_list(
+    tasks: list[Task],
+    section: str,
+    detail: DetailLevel = "index",
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> str:
     """
     Format a list of tasks for display.
 
     Args:
-        tasks: List of tasks to format
+        tasks: List of tasks to format, in file order
         section: Section name for the header
+        detail: Envelope detail level
+        limit: Maximum tasks to show
+        offset: Tasks to skip
 
     Returns:
-        Formatted task list with section header and task summaries, plus a
-        warning if the file contains tasks the parser cannot see.
+        A rendered page. The result numbering is the task's position in its
+        section, which is what encodes priority, and any parser warning is
+        carried on every page.
     """
-    warning = format_unparsed_warning(find_unparsed_tasks())
+    return render(
+        [task_to_record(task) for task in tasks],
+        tool="list_tasks",
+        header=section,
+        detail=detail,
+        limit=limit,
+        offset=offset,
+        warnings=task_warnings(),
+    )
 
-    if not tasks:
-        return "\n".join([f"No tasks in {section}", *warning])
 
-    lines = [f"{section}", "=" * len(section), ""]
+###############################################################################
+#
+def format_task_search(
+    tasks: list[Task],
+    query: str,
+    detail: DetailLevel = "snippet",
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> str:
+    """
+    Format task search results.
 
-    for task in tasks:
-        ticket = f"[{task.ticket_id}] " if task.ticket_id else ""
-        name_info = f" (#{task.custom_id})" if task.custom_id else ""
-        lines.append(f"  {task.status}  {ticket}{task.headline}{name_info}")
+    Args:
+        tasks: Matching tasks
+        query: The query that produced them, used to build snippets
+        detail: Envelope detail level, defaulting to snippet so a result shows
+            why it matched and not merely that it did
+        limit: Maximum matches to show
+        offset: Matches to skip
 
-    lines.extend(warning)
-
-    return "\n".join(lines)
+    Returns:
+        A rendered page carrying the same parser warning as a listing. A task
+        hidden from the parser makes search miss it silently, or answer with
+        the task that absorbed it, so the warning matters most here.
+    """
+    return render(
+        [task_to_record(task) for task in tasks],
+        tool="search_tasks",
+        header=f'search_tasks("{query}")',
+        detail=detail,
+        limit=limit,
+        offset=offset,
+        query=query,
+        warnings=task_warnings(),
+    )
 
 
 ###############################################################################

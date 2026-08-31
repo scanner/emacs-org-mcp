@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 from orgmunge import Org
+from pytest_check import check
 
 from mcp_server.orgmunge_patch import (
     FIXED_DRAWER_PATTERN,
@@ -46,6 +47,7 @@ from mcp_server.tasks import (
     find_task,
     find_unparsed_tasks,
     format_task_list,
+    format_task_search,
     get_org,
     list_tasks,
     move_task,
@@ -436,18 +438,36 @@ class TestHiddenTaskDetection:
 
     ####################################################################
     #
-    def test_hidden_tasks_are_reported_in_listings(self, hidden_victim):
+    def test_hidden_tasks_are_reported_however_the_output_is_read(
+        self, hidden_victim
+    ):
         """
         GIVEN: a file containing a task the parser cannot see
-        WHEN:  the task list is formatted
-        THEN:  the output warns about it instead of silently omitting it
+        WHEN:  tasks are listed, searched, or read a page at a time
+        THEN:  every one of those warns about it instead of silently omitting
+               it
+
+        Search matters as much as listing and is easier to lose: a hidden task
+        makes a search miss it, or answer with the task that absorbed it, and
+        the result looks like an ordinary miss. Paging matters because a
+        warning a caller only sees on the last page is one they do not see.
         """
-        assert find_unparsed_tasks() == ["task-victim"]
+        with check:
+            assert find_unparsed_tasks() == ["task-victim"]
 
-        output = format_task_list(list_tasks("Tasks"), "Tasks")
+        outputs = {
+            "list": format_task_list(list_tasks("Tasks"), "Tasks"),
+            "search": format_task_search(search_tasks("task"), "task"),
+            "paged list": format_task_list(
+                list_tasks("Tasks"), "Tasks", limit=1, offset=1
+            ),
+        }
 
-        assert "WARNING" in output
-        assert "task-victim" in output
+        for how, output in outputs.items():
+            with check:
+                assert "WARNING" in output, f"{how} dropped the warning"
+            with check:
+                assert "task-victim" in output, f"{how} did not name the task"
 
     ####################################################################
     #

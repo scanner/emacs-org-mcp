@@ -36,16 +36,16 @@ from mcp_server.projects import (
     search_projects,
     update_project,
 )
+from mcp_server.results import DEFAULT_LIMIT, DETAIL_LEVELS
 from mcp_server.tasks import (
     create_task,
     find_task,
-    find_unparsed_tasks,
     format_move_result,
     format_task_create_result,
     format_task_detail,
     format_task_list,
+    format_task_search,
     format_task_update_result,
-    format_unparsed_warning,
     list_tasks,
     move_task,
     search_tasks,
@@ -101,6 +101,50 @@ def format_search_results(items: list, item_type: str) -> str:
     return "\n".join(lines)
 
 
+###############################################################################
+#
+def envelope_properties(default_detail: str) -> dict:
+    """
+    Return the paging and detail properties shared by every list and search.
+
+    Args:
+        default_detail: The level this tool uses when none is given --
+            ``index`` for a listing, ``snippet`` for a search
+
+    Returns:
+        JSON-schema properties to merge into a tool's inputSchema.
+
+    Note:
+        Defined once so the three knobs keep the same names and meanings
+        everywhere. A caller who learns them on one tool has learned them on
+        all of them.
+    """
+    return {
+        "detail": {
+            "type": "string",
+            "enum": list(DETAIL_LEVELS),
+            "description": (
+                f"How much of each record to return (default {default_detail}). "
+                "index: one line per record. snippet: that line plus the "
+                "matching lines, so you can see why it matched. full: the "
+                "whole record. snippet falls back to index when there is no "
+                "query to match against."
+            ),
+        },
+        "limit": {
+            "type": "integer",
+            "description": (
+                f"Maximum records to return (default {DEFAULT_LIMIT}). The "
+                "response states the total and how to fetch the next page."
+            ),
+        },
+        "offset": {
+            "type": "integer",
+            "description": "Records to skip, for paging (default 0).",
+        },
+    }
+
+
 # =============================================================================
 # MCP Tool Definitions
 # =============================================================================
@@ -132,7 +176,8 @@ async def handle_list_tools() -> list[Tool]:
                             global_state.config.active_section,
                             global_state.config.completed_section,
                         ],
-                    }
+                    },
+                    **envelope_properties("index"),
                 },
                 "required": ["section"],
             },
@@ -275,7 +320,8 @@ async def handle_list_tools() -> list[Tool]:
                     "query": {
                         "type": "string",
                         "description": "Search query (matches headline and content)",
-                    }
+                    },
+                    **envelope_properties("snippet"),
                 },
                 "required": ["query"],
             },
@@ -632,7 +678,13 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             # ----- Task Operations -----
             case "list_tasks":
                 tasks = list_tasks(arguments["section"])
-                output = format_task_list(tasks, arguments["section"])
+                output = format_task_list(
+                    tasks,
+                    arguments["section"],
+                    detail=arguments.get("detail", "index"),
+                    limit=arguments.get("limit", DEFAULT_LIMIT),
+                    offset=arguments.get("offset", 0),
+                )
                 return [TextContent(type="text", text=output)]
 
             case "get_task":
@@ -690,13 +742,12 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             case "search_tasks":
                 tasks = search_tasks(arguments["query"])
-                # A task hidden from the parser makes search silently miss it,
-                # or return the task that absorbed it. Say so.
-                output = "\n".join(
-                    [
-                        format_search_results(tasks, "task"),
-                        *format_unparsed_warning(find_unparsed_tasks()),
-                    ]
+                output = format_task_search(
+                    tasks,
+                    arguments["query"],
+                    detail=arguments.get("detail", "snippet"),
+                    limit=arguments.get("limit", DEFAULT_LIMIT),
+                    offset=arguments.get("offset", 0),
                 )
                 return [TextContent(type="text", text=output)]
 

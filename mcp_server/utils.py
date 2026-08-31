@@ -5,6 +5,7 @@ Shared utilities: timestamps, file I/O, diff, and ediff approval integration.
 # system imports
 import difflib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +20,51 @@ from mcp_server.versioning import commit_file, ensure_backups_ignored
 # =============================================================================
 # Timestamp Utilities
 # =============================================================================
+
+# The date at the front of an org timestamp, active or inactive. Only the date
+# is needed for an age, so the weekday and time are left unmatched.
+TIMESTAMP_DATE_RE = re.compile(r"[<\[](\d{4})-(\d{2})-(\d{2})")
+
+
+###############################################################################
+#
+def format_age(timestamp: str, now: datetime | None = None) -> str:
+    """
+    Render how long ago an org timestamp was, compactly enough for a listing.
+
+    Args:
+        timestamp: An org timestamp, active or inactive, e.g.
+            ``[2026-08-31 Mon 14:29]``. Anything unparseable yields "".
+        now: Point to measure from. Defaults to the current time; present so
+            callers can pin it.
+
+    Returns:
+        A short age such as ``today``, ``3d``, ``2w``, ``5mo`` or ``1y``.
+
+    Note:
+        Scale is what matters when scanning a list -- whether something was
+        touched this week or last spring -- so precision is deliberately
+        traded away as the age grows.
+    """
+    match = TIMESTAMP_DATE_RE.search(timestamp or "")
+    if not match:
+        return ""
+
+    now = now or datetime.now()
+    then = datetime(*(int(g) for g in match.groups()))  # type: ignore[arg-type]
+    days = (now.date() - then.date()).days
+
+    if days < 0:
+        return ""
+    if days == 0:
+        return "today"
+    if days < 14:
+        return f"{days}d"
+    if days < 60:
+        return f"{days // 7}w"
+    if days < 365:
+        return f"{days // 30}mo"
+    return f"{days // 365}y"
 
 
 ###############################################################################
