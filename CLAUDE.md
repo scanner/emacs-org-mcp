@@ -78,6 +78,7 @@ emacs-task-journal-mcp/
 │   ├── resources.py       # MCP resource definitions and guide loading
 │   ├── tasks.py           # Task CRUD, orgmunge ops, write guard
 │   ├── journal.py         # Journal CRUD (manual parsing)
+│   ├── orgmunge_patch.py  # Line-oriented fix for orgmunge's drawer lexer
 │   ├── projects.py        # Project CRUD (manual parsing)
 │   ├── properties.py      # Canonical :PROPERTIES: drawer format
 │   ├── validation.py      # Heading-level validation, block escaping
@@ -147,8 +148,9 @@ Validation runs in `parse_task_entry`, `create_journal_entry`,
 `update_journal_entry`, `create_project`, and `update_project` — the parser
 boundary, so no tool path can bypass it.
 
-Two distinct corruptions hide a task from the org parser. Both are guarded
-against, and both have regression tests in `tests/test_task_integrity.py`:
+Three distinct corruptions hide a heading from the org parser. All are
+guarded against, and all have regression tests in
+`tests/test_task_integrity.py`:
 
 **Indented heading** (root cause of the 2026-08-23 data loss). A single leading
 space turns `** TODO Task` into body text, so org folds the whole task —
@@ -165,12 +167,36 @@ blocks — a `* Tasks` line inside a block parses as a real level-1 heading and
 re-parents every task after it. `escape_headings_in_blocks()` comma-escapes
 such lines (`,* Tasks`), which is what Emacs itself does.
 
+**False drawer** (root cause of the 2026-08-28 data loss). See
+`mcp_server/orgmunge_patch.py`. Org decides every construct by the line it sits
+on; orgmunge's drawer pattern `^\s*:[^:]+:.+?:(?:end|END):` does not — its `.+?`
+crosses newlines because the lexer sets `re.DOTALL`, and its `[^:]+` crosses
+them regardless, since a negated class matches `\n` unless `\n` is excluded.
+Any body line whose
+first non-blank character is a colon therefore opens a drawer running to the
+next `:END:` *anywhere later in the file*, swallowing the headings in between.
+A file with a hundred property drawers always has a later `:END:`, so the reach
+is effectively unbounded. One fixed-width histogram line made `* Completed
+Tasks` invisible: every DONE task under it was reported as active, the first
+task below it was absorbed into the body of the task above, and rewriting that
+task destroyed the heading. The patch makes the drawer token line-anchored and
+unable to span a headline — the same convention `properties.py` already uses.
+It verifies orgmunge still ships the known-broken pattern and refuses to start
+if not, since a silently ineffective patch means losing data again.
+
 ### Write Integrity Guarantees (`mcp_server/tasks.py`)
 
 - `write_tasks_org()` wraps every write to `tasks.org`. It scans the raw text
   before and after (via `scan_task_identities()`, deliberately **not** using
   orgmunge) and refuses the write if any task other than the named `target`
   would disappear. This holds regardless of *why* a task went missing.
+- The same guard refuses any write that would drop a **section heading**
+  (`scan_section_headings()`, also raw-text). A lost section need not take a
+  task with it: when a swallowed region ends before the first task under a
+  heading, every task identity still matches and only the heading dies. That is
+  how `* Completed Tasks` was destroyed with the task guard already in place. A
+  section's trailing progress cookie is ignored, since it is recounted while
+  the section stays put.
 - `write_file()` writes via temp file + atomic rename and retains the previous
   version as `<name>.bak`, so recovery never depends on an Emacs autosave.
 - `find_unparsed_tasks()` reports tasks present in the file but invisible to
@@ -476,6 +502,19 @@ Expected behavior:
   works around it by comma-escaping heading-like lines inside blocks on write,
   but org content written to these files by other means can still confuse the
   parser (`find_unparsed_tasks()` will report it)
+- Replacing orgmunge with a purpose-built line-oriented module is the standing
+  plan. The case for it is the accumulated behaviour, not a single defect: the
+  renderer drops blank lines between sections (so whole-file round trips are not
+  byte-stable, and no drawer formatting can fix that), `#+begin_src` fencing is
+  not honoured, only the first `**` heading of a parsed fragment is kept, and
+  the drawer token needed patching outright. The dependency surface is small and
+  confined to `tasks.py` — `Org(path)`, `root.children`,
+  `headline.{title,level,todo,tags}`, `properties`, `body`, `children`,
+  `add_child`, `remove_child`, `str(org)` — and much of the raw-text scanning a
+  replacement needs already exists (`scan_task_identities`,
+  `scan_section_headings`, `normalize_drawers`, `find_indented_headings`,
+  `escape_headings_in_blocks`). Note the DOTALL problem is *not* systemic across
+  the lexer: `t_DRAWER` is its only pattern with unbounded newline reach.
 
 ## Related Files
 

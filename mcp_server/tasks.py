@@ -35,6 +35,11 @@ from mcp_server.validation import (
 # These are the properties we care about on a task in tasks.org
 PROPERTIES = ("CUSTOM_ID", "ID", "CREATED", "MODIFIED", "CLOSED")
 
+# A trailing progress cookie on a section heading, e.g. the "[1/2]" in
+# "* High Level Tasks (in order) [1/2]".  Stripped when comparing sections
+# across a write, since the cookie changes while the section does not.
+SECTION_COOKIE_RE = re.compile(r"[ \t]*\[\d*/\d*\][ \t]*$")
+
 # TODO/DONE states from orgmunge
 TODO_STATES = (v for k, v in Org.get_todos()["todo_states"].items())
 DONE_STATES = (v for k, v in Org.get_todos()["done_states"].items())
@@ -278,6 +283,37 @@ def scan_task_identities(file_content: str) -> list[str]:
 
 ###############################################################################
 #
+def scan_section_headings(file_content: str) -> list[str]:
+    """
+    List every level-1 section in a tasks.org file by scanning the raw text.
+
+    Args:
+        file_content: Full text of a tasks.org file
+
+    Returns:
+        Section names in file order, with tags and any trailing progress
+        cookie removed so a section is the same section before and after its
+        cookie is recounted or its tags are realigned.
+
+    Note:
+        Like :func:`scan_task_identities` this deliberately does NOT go
+        through orgmunge.  A section the parser cannot see is precisely what
+        this is here to notice, so asking the parser would defeat it.
+
+        Tags and cookies are stripped for the same reason they are stripped
+        from task identities: orgmunge re-renders both, and a name that does
+        not survive a round trip would make the write guard refuse every
+        write with no way for the caller to comply.
+    """
+    return [
+        SECTION_COOKIE_RE.sub("", _strip_tags(heading.text)).strip()
+        for heading in scan_headings(file_content)
+        if heading.level == 1
+    ]
+
+
+###############################################################################
+#
 def write_tasks_org(org: Org, summary: str, target: str | None = None) -> None:
     """
     Serialise and write the tasks file, refusing writes that lose a task.
@@ -290,8 +326,8 @@ def write_tasks_org(org: Org, summary: str, target: str | None = None) -> None:
             the operation must not remove any task at all.
 
     Raises:
-        ValueError: If any task other than ``target`` would disappear.  The
-            file is left untouched.
+        ValueError: If any task other than ``target``, or any section heading,
+            would disappear.  The file is left untouched.
 
     Note:
         This is the backstop for the whole module.  Whatever else goes wrong --
@@ -299,15 +335,21 @@ def write_tasks_org(org: Org, summary: str, target: str | None = None) -> None:
         slipped past validation -- no write may ever delete a task the caller
         did not name.  Correctness here does not depend on knowing *why* a task
         went missing, only that it did.
+
+        Sections are checked as well as tasks, because a lost section does not
+        have to take a task with it.  When a swallowed region ends before the
+        first task under a heading, every task identity still matches and only
+        the heading dies -- which is how "* Completed Tasks" was destroyed on
+        2026-08-28 with the task guard already in place.
     """
     tasks_file = global_state.config.tasks_file
     new_content = str(org)
 
-    before = (
-        scan_task_identities(tasks_file.read_text(encoding="utf-8"))
-        if tasks_file.exists()
-        else []
+    old_content = (
+        tasks_file.read_text(encoding="utf-8") if tasks_file.exists() else ""
     )
+
+    before = scan_task_identities(old_content)
     after = scan_task_identities(new_content)
 
     allowed = {target} if target else set()
@@ -321,6 +363,23 @@ def write_tasks_org(org: Org, summary: str, target: str | None = None) -> None:
             f"The file has been left unchanged. This usually means the org "
             f"parser lost track of a heading; re-read the task with get_task "
             f"and retry, or inspect the file directly."
+        )
+
+    sections_after = set(scan_section_headings(new_content))
+    dropped = [
+        name
+        for name in scan_section_headings(old_content)
+        if name not in sections_after
+    ]
+
+    if dropped:
+        lost = "\n".join(f"  - {name}" for name in dropped)
+        raise ValueError(
+            f"Refusing to write {tasks_file}: the operation would remove "
+            f"{len(dropped)} section heading(s):\n\n{lost}\n\n"
+            f"The file has been left unchanged. No task operation removes a "
+            f"section, so the parser has lost track of one; run list_tasks to "
+            f"see what it can no longer resolve, or inspect the file directly."
         )
 
     write_file(tasks_file, new_content, summary=summary)
