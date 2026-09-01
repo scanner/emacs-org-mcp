@@ -42,6 +42,7 @@ from mcp_server.projects import (
 )
 from mcp_server.results import DEFAULT_LIMIT, DETAIL_LEVELS
 from mcp_server.tasks import (
+    POSITIONS,
     create_task,
     find_task,
     format_move_result,
@@ -52,6 +53,8 @@ from mcp_server.tasks import (
     format_task_update_result,
     list_tasks,
     move_task,
+    reorder_task,
+    resort_completed_tasks,
     search_tasks,
     update_task,
 )
@@ -149,6 +152,45 @@ def envelope_properties(default_detail: str) -> dict:
     }
 
 
+###############################################################################
+#
+def position_properties() -> dict:
+    """
+    Return the placement properties shared by every tool that files a task.
+
+    Returns:
+        JSON-schema properties to merge into a tool's inputSchema.
+
+    Note:
+        Position in a section is priority: the top is what to work on next,
+        and a task drifts down as it goes unpicked. These are deliberately not
+        integer indices -- an index shifts every time anything moves, so a
+        caller would have to compute a fresh one for every call.
+    """
+    return {
+        "position": {
+            "type": "string",
+            "enum": list(POSITIONS),
+            "description": (
+                "Where to file the task in its section (default top). "
+                "top: work on this next. bottom: lowest priority. "
+                "before/after: position it relative to related work named by "
+                "relative_to -- before for pre-work, after for follow-on "
+                "work. after is ordering only and does not mean blocked-by: "
+                "the task may proceed while the other is still open."
+            ),
+        },
+        "relative_to": {
+            "type": "string",
+            "description": (
+                "Task to position against, required by before and after. "
+                "Accepts a CUSTOM_ID, ticket ID or headline substring, and "
+                "must name a task in the same section."
+            ),
+        },
+    }
+
+
 # =============================================================================
 # MCP Tool Definitions
 # =============================================================================
@@ -242,6 +284,7 @@ async def handle_list_tools() -> list[Tool]:
                             "The task is one ** heading; every subsection must be *** or deeper. A stray ** is rejected."
                         ),
                     },
+                    **position_properties(),
                 },
                 "required": ["section", "task_entry"],
             },
@@ -272,6 +315,7 @@ async def handle_list_tools() -> list[Tool]:
                             "The task is one ** heading; every subsection must be *** or deeper. A stray ** is rejected."
                         ),
                     },
+                    **position_properties(),
                 },
                 "required": ["identifier", "task_entry"],
             },
@@ -300,6 +344,7 @@ async def handle_list_tools() -> list[Tool]:
                             global_state.config.completed_section,
                         ],
                     },
+                    **position_properties(),
                 },
                 "required": [
                     "identifier",
@@ -329,6 +374,38 @@ async def handle_list_tools() -> list[Tool]:
                 },
                 "required": ["query"],
             },
+        ),
+        Tool(
+            name="reorder_task",
+            description=(
+                "Move a task within its own section without changing it. Position in a section is "
+                "priority: the top of the active section is what to work on next, and a task drifts down "
+                "as it goes unpicked, so its position is itself a signal about whether it still matters. "
+                "Use this to promote work you are picking up, demote work you are not, or place a task "
+                "next to related work. Works in any section. Returns the task's new position."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "identifier": {
+                        "type": "string",
+                        "description": "Task CUSTOM_ID, ticket ID, or headline substring",
+                    },
+                    **position_properties(),
+                },
+                "required": ["identifier"],
+            },
+        ),
+        Tool(
+            name="resort_completed_tasks",
+            description=(
+                "One-off: sort the completed section newest-first by :CLOSED:, so it reads as a record of "
+                "what was finished most recently. Undated tasks sort last, keeping their existing order. "
+                "This is NOT automatic and is not needed routinely -- new completions already go to the "
+                "top. Run it only when asked to, typically once to close the seam left by completions "
+                "that predate that behaviour. It overwrites any other ordering the section may have."
+            ),
+            inputSchema={"type": "object", "properties": {}},
         ),
         # ----- Journal Tools -----
         Tool(
@@ -744,7 +821,10 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             case "create_task":
                 section, task_content = create_task(
-                    arguments["section"], arguments["task_entry"]
+                    arguments["section"],
+                    arguments["task_entry"],
+                    arguments.get("position", "top"),
+                    arguments.get("relative_to"),
                 )
                 output = format_task_create_result(section, task_content)
                 return [TextContent(type="text", text=output)]
@@ -759,6 +839,8 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ) = update_task(
                     arguments["identifier"],
                     arguments["task_entry"],
+                    arguments.get("position", "top"),
+                    arguments.get("relative_to"),
                 )
                 output = format_task_update_result(
                     old_task,
@@ -769,11 +851,42 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 )
                 return [TextContent(type="text", text=output)]
 
+            case "resort_completed_tasks":
+                sorted_count, repositioned = resort_completed_tasks()
+                return [
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"\u2713 Re-sorted {sorted_count} completed "
+                            f"task(s) newest first; {repositioned} changed "
+                            f"position."
+                        ),
+                    )
+                ]
+
+            case "reorder_task":
+                headline, section, index = reorder_task(
+                    arguments["identifier"],
+                    arguments.get("position", "top"),
+                    arguments.get("relative_to"),
+                )
+                return [
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"\u2713 Moved to position #{index} in {section}\n"
+                            f"  {headline}"
+                        ),
+                    )
+                ]
+
             case "move_task":
                 headline, from_section, to_section = move_task(
                     arguments["identifier"],
                     arguments["from_section"],
                     arguments["to_section"],
+                    arguments.get("position", "top"),
+                    arguments.get("relative_to"),
                 )
                 output = format_move_result(headline, from_section, to_section)
                 return [TextContent(type="text", text=output)]

@@ -402,13 +402,19 @@ class TestWriteGuard:
         create_task("Tasks", make_task("Brand new", "task-new"))
         move_task("task-follower", "Tasks", "Completed Tasks")
 
-        assert [t.custom_id for t in list_tasks("Tasks")] == [
-            "task-big",
-            "task-new",
-        ]
-        assert [t.custom_id for t in list_tasks("Completed Tasks")] == [
-            "task-follower"
-        ]
+        # Which tasks survive is the guarantee here. Where they sit is
+        # priority, and belongs to tests/test_task_position.py -- asserting an
+        # order here would pin placement policy in a test about data loss, so
+        # a deliberate change to that policy would read as a guard failure.
+        with check:
+            assert sorted(t.custom_id for t in list_tasks("Tasks")) == [
+                "task-big",
+                "task-new",
+            ]
+        with check:
+            assert [t.custom_id for t in list_tasks("Completed Tasks")] == [
+                "task-follower"
+            ]
 
 
 ########################################################################

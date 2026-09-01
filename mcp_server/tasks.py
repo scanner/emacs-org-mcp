@@ -46,6 +46,12 @@ PROPERTIES = ("CUSTOM_ID", "ID", "CREATED", "MODIFIED", "CLOSED")
 # across a write, since the cookie changes while the section does not.
 SECTION_COOKIE_RE = re.compile(r"[ \t]*\[\d*/\d*\][ \t]*$")
 
+# Where a task may be placed in its section. Position is priority, so these
+# are the vocabulary for saying what a task's priority is relative to the rest.
+# Deliberately not integer indices: an index shifts every time anything moves,
+# so a caller would have to compute a fresh one for every call.
+POSITIONS = ("top", "bottom", "before", "after")
+
 # TODO/DONE states from orgmunge
 TODO_STATES = (v for k, v in Org.get_todos()["todo_states"].items())
 DONE_STATES = (v for k, v in Org.get_todos()["done_states"].items())
@@ -303,6 +309,128 @@ def scan_task_identities(file_content: str) -> list[str]:
         identities.append(custom_id or f"headline:{_strip_tags(rest)}")
 
     return identities
+
+
+###############################################################################
+#
+def heading_matches(heading: Heading, identifier: str) -> bool:
+    """
+    Report whether a heading is the task named by ``identifier``.
+
+    Args:
+        heading: A level-2 task heading
+        identifier: ``:CUSTOM_ID:``, a bare id without the ``task-`` prefix,
+            or a substring of the headline
+
+    Returns:
+        True when the heading is that task.
+
+    Note:
+        Deliberately the same matching :func:`find_task` performs, so naming
+        a task in ``relative_to`` works exactly as naming one anywhere else.
+    """
+    properties = _properties(heading)
+    headline = (
+        heading.headline.title
+        if hasattr(heading.headline, "title")
+        else str(heading.headline)
+    )
+    wanted = identifier.strip().lower()
+
+    return (
+        properties.CUSTOM_ID == identifier
+        or properties.CUSTOM_ID == f"task-{wanted}"
+        or wanted in headline.lower()
+    )
+
+
+###############################################################################
+#
+def placement_index(
+    children: list[Heading],
+    position: str,
+    relative_to: str | None = None,
+) -> int:
+    """
+    Work out where in a section a task should be inserted.
+
+    Args:
+        children: The section's tasks, excluding the one being placed
+        position: One of ``top``, ``bottom``, ``before`` or ``after``
+        relative_to: Task to position against, required by ``before`` and
+            ``after``
+
+    Returns:
+        The index to insert at.
+
+    Raises:
+        ValueError: If the position is unknown, if ``before``/``after`` is
+            given without ``relative_to``, or if ``relative_to`` names no task
+            in this section.
+
+    Note:
+        ``before`` and ``after`` express ordering only. A task placed after
+        another is follow-on work, not work blocked by it, and may proceed
+        while the other is still open -- so nothing here implies a dependency.
+    """
+    match position:
+        case "top":
+            return 0
+        case "bottom":
+            return len(children)
+        case "before" | "after":
+            if not relative_to:
+                raise ValueError(
+                    f"position '{position}' needs relative_to naming the task "
+                    f"to position against"
+                )
+            for idx, child in enumerate(children):
+                if heading_matches(child, relative_to):
+                    return idx if position == "before" else idx + 1
+            raise ValueError(
+                f"Cannot position {position} '{relative_to}': no such task in "
+                f"this section"
+            )
+        case _:
+            raise ValueError(
+                f"Unknown position '{position}'. Use one of: "
+                f"{', '.join(POSITIONS)}"
+            )
+
+
+###############################################################################
+#
+def place_child(
+    section: Heading,
+    child: Heading,
+    position: str = "top",
+    relative_to: str | None = None,
+) -> None:
+    """
+    Add a task to a section at a chosen position.
+
+    Args:
+        section: The section heading to add to
+        child: The task heading to place
+        position: One of ``top``, ``bottom``, ``before`` or ``after``
+        relative_to: Task to position against, for ``before`` and ``after``
+
+    Note:
+        Position in a section is priority, so every path that files a task
+        goes through here rather than appending. Appending is what filed new
+        and reopened work at the bottom, which is where a task ends up when it
+        has been passed over -- the opposite of what either means.
+
+        ``add_child`` is still what does the adopting: it sets the parent and
+        appends. This lifts the task back off the end and inserts it where it
+        belongs.
+    """
+    section.add_child(child, new=True)
+
+    children = list(section.children)
+    placed = children.pop()
+    children.insert(placement_index(children, position, relative_to), placed)
+    section.children = children
 
 
 ###############################################################################
@@ -740,13 +868,22 @@ def update_high_level_task(org: Org, description: str, completed: bool) -> None:
 
 ###############################################################################
 #
-def create_task(section_name: str, task_entry: str) -> tuple[str, str]:
+def create_task(
+    section_name: str,
+    task_entry: str,
+    position: str = "top",
+    relative_to: str | None = None,
+) -> tuple[str, str]:
     """
     Add a new task to the specified section.
 
     Args:
         section_name: Section to add the task to
         task_entry: Complete org-formatted task entry string
+        position: Where to file it in the section -- one of top, bottom,
+            before or after. Defaults to top, because this operation is itself
+            a statement that the work matters.
+        relative_to: Task to position against, required by before and after
 
     Returns:
         Tuple of (section_name, task_content)
@@ -806,7 +943,7 @@ def create_task(section_name: str, task_entry: str) -> tuple[str, str]:
         if "CREATED" not in new_task.properties:
             new_task.properties["CREATED"] = get_current_timestamp(active=True)
 
-    target_section.add_child(new_task, new=True)
+    place_child(target_section, new_task, position, relative_to)
 
     # Add to High Level Tasks checklist if creating in active section
     if section_name == global_state.config.active_section:
@@ -828,7 +965,10 @@ def create_task(section_name: str, task_entry: str) -> tuple[str, str]:
 ###############################################################################
 #
 def update_task(
-    identifier: str, new_task_entry: str
+    identifier: str,
+    new_task_entry: str,
+    position: str = "top",
+    relative_to: str | None = None,
 ) -> tuple[Task, str, bool, str, str]:
     """
     Replace a task with new content, moving sections if status changed.
@@ -836,6 +976,10 @@ def update_task(
     Args:
         identifier: String to find the task (CUSTOM_ID, ticket ID, or headline)
         new_task_entry: Complete org-mode task entry as a string
+        position: Where to file it when the status change moves it to another
+            section. Ignored when the task stays put, since an edit says
+            nothing about priority and must not quietly promote a task.
+        relative_to: Task to position against, required by before and after
 
     Returns:
         Tuple of (old_task, new_content, was_moved, old_section, new_section)
@@ -964,9 +1108,11 @@ def update_task(
             current_children.insert(idx, new_task_in_list)
             target_section.children = current_children
     else:
-        # Moving to different section
+        # Changing section is a priority statement in itself -- finishing work
+        # or reopening it -- so the task goes to the top rather than the
+        # bottom, where passed-over work accumulates.
         old_section_heading.remove_child(old_heading)
-        target_section.add_child(new_task, new=True)
+        place_child(target_section, new_task, position, relative_to)
 
     # Update High Level Tasks checklist if status changed
     if was_moved := (old_section_name != target_section_name):
@@ -1006,8 +1152,203 @@ def update_task(
 
 ###############################################################################
 #
+def section_identities(section: Heading) -> list[str]:
+    """
+    List the tasks in a section, by identity, in order.
+
+    Args:
+        section: A section heading
+
+    Returns:
+        ``:CUSTOM_ID:`` where a task has one, otherwise ``headline:<text>``.
+    """
+    identities: list[str] = []
+
+    for child in section.children:
+        if child.headline.level != 2:
+            continue
+        if child.headline.todo not in ALL_STATES:
+            continue
+
+        headline = (
+            child.headline.title
+            if hasattr(child.headline, "title")
+            else str(child.headline)
+        )
+        identities.append(
+            _properties(child).CUSTOM_ID or f"headline:{headline}"
+        )
+
+    return identities
+
+
+###############################################################################
+#
+def reorder_task(
+    identifier: str,
+    position: str = "top",
+    relative_to: str | None = None,
+) -> tuple[str, str, int]:
+    """
+    Move a task within its own section, without changing it.
+
+    Args:
+        identifier: String to find the task
+        position: One of ``top``, ``bottom``, ``before`` or ``after``
+        relative_to: Task to position against, for ``before`` and ``after``
+
+    Returns:
+        Tuple of (headline, section name, new 1-based position).
+
+    Raises:
+        ValueError: If the task is not found, the position is unknown, or the
+            reorder would change which tasks the section holds.
+
+    Note:
+        A reorder is a pure permutation, which admits a stricter check than
+        the general write guard: the section must hold exactly the same tasks
+        afterwards, in some order. That is cheap and exact, and it guards the
+        children-list surgery this performs.
+
+        There is no ediff approval here. Nothing about the task changes, so
+        there is no diff of its content to show -- only its position moves,
+        and that is what the caller asked for.
+
+        Works in any section. Completed tasks are usually newest-first, but
+        may be reordered by other logic on request.
+    """
+    task, heading, section, org = find_task(identifier)
+
+    section_name = (
+        section.headline.title
+        if hasattr(section.headline, "title")
+        else str(section.headline)
+    ).strip()
+
+    before = section_identities(section)
+
+    section.remove_child(heading)
+    place_child(section, heading, position, relative_to)
+
+    after = section_identities(section)
+
+    if sorted(before) != sorted(after):
+        lost = sorted(set(before) - set(after))
+        gained = sorted(set(after) - set(before))
+        raise ValueError(
+            f"Refusing to reorder: '{section_name}' would no longer hold the "
+            f"same tasks. A reorder must only permute them.\n"
+            f"  missing after: {lost or 'none'}\n"
+            f"  appeared after: {gained or 'none'}"
+        )
+
+    write_tasks_org(
+        org,
+        summary=(
+            f"reorder task {task.custom_id or task.headline} to {position}"
+            + (f" {relative_to}" if relative_to else "")
+        ),
+    )
+
+    identity = task.custom_id or f"headline:{task.headline}"
+
+    return (task.headline, section_name, after.index(identity) + 1)
+
+
+###############################################################################
+#
+def resort_completed_tasks() -> tuple[int, int]:
+    """
+    Sort the completed section newest-first by ``:CLOSED:``.
+
+    Returns:
+        Tuple of (tasks in the section, how many changed position).
+
+    Raises:
+        ValueError: If the completed section cannot be found, or if the sort
+            would change which tasks it holds.
+
+    Note:
+        Deliberately not automatic. New completions go to the top from now on,
+        which leaves a seam above tasks completed before that was true; this
+        is the one-off that closes the seam, and it exists to be run on
+        request rather than to run itself. Completed order may also be
+        meaningful for other reasons, and this would overwrite that.
+
+        Tasks with no ``:CLOSED:`` sort last, in their existing relative
+        order, since there is nothing to place them by and inventing a date
+        would be worse than leaving them where they are.
+    """
+    org = get_org()
+    section_name = global_state.config.completed_section
+    section = find_section(org, section_name)
+
+    if section is None:
+        raise ValueError(f"Section not found: {section_name}")
+
+    before_order = section_identities(section)
+    children = list(section.children)
+
+    # Sort key: CLOSED descending, then original position ascending so that
+    # anything without a date keeps its relative order rather than shuffling.
+    def sort_key(item: tuple[int, Heading]) -> tuple[int, str, int]:
+        idx, child = item
+        closed = _properties(child).CLOSED or ""
+        return (0 if closed else 1, closed and _invert(closed) or "", idx)
+
+    section.children = [
+        child for _, child in sorted(enumerate(children), key=sort_key)
+    ]
+
+    after_order = section_identities(section)
+
+    if sorted(before_order) != sorted(after_order):
+        raise ValueError(
+            f"Refusing to re-sort '{section_name}': the section would no "
+            f"longer hold the same tasks. A sort must only permute them."
+        )
+
+    moved = sum(
+        1 for a, b in zip(before_order, after_order, strict=True) if a != b
+    )
+
+    write_tasks_org(
+        org, summary=f"re-sort {section_name} newest first by CLOSED"
+    )
+
+    return (len(after_order), moved)
+
+
+###############################################################################
+#
+def _invert(timestamp: str) -> str:
+    """
+    Return a sort key that orders timestamps newest first.
+
+    Args:
+        timestamp: An org timestamp such as ``<2026-08-31 Mon 14:29>``
+
+    Returns:
+        A string that sorts in reverse chronological order.
+
+    Note:
+        Org timestamps sort correctly as text because the date is written
+        most-significant first, so reversing is a matter of complementing each
+        digit rather than parsing a date.
+    """
+    return "".join(
+        str(9 - int(char)) if char.isdigit() else char for char in timestamp
+    )
+
+
+###############################################################################
+#
 def move_task(
-    identifier: str, from_section: str, to_section: str
+    identifier: str,
+    from_section: str,
+    to_section: str,
+    position: str = "top",
+    relative_to: str | None = None,
 ) -> tuple[str, str, str]:
     """
     Move a task from one section to another.
@@ -1016,6 +1357,10 @@ def move_task(
         identifier: String to find the task
         from_section: Source section name
         to_section: Destination section name
+        position: Where to file it in the section -- one of top, bottom,
+            before or after. Defaults to top, because this operation is itself
+            a statement that the work matters.
+        relative_to: Task to position against, required by before and after
 
     Returns:
         Tuple of (headline, from_section, to_section)
@@ -1031,7 +1376,7 @@ def move_task(
         raise ValueError(f"Target section not found: {to_section}")
 
     old_section.remove_child(heading)
-    target_section.add_child(heading, new=True)
+    place_child(target_section, heading, position, relative_to)
 
     # A move relocates a task but must not remove one, so nothing is exempt.
     write_tasks_org(
