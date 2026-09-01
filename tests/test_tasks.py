@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from orgmunge import Org
+from pytest_check import check
 
 from mcp_server.config import global_state
 from mcp_server.tasks import (
@@ -414,60 +415,90 @@ This task is DONE but has no CLOSED timestamp.
 
 
 class TestSearchTasks:
-    """Tests for search_tasks function."""
+    """
+    Tests for searching tasks.
 
-    def test_search_by_headline(self, sample_tasks_file: TasksFileInfo) -> None:
-        """Test searching tasks by headline content."""
-        results = search_tasks("authentication")
+    Search returns ranked results, so a hit carries its task as a payload
+    alongside its score. The guarantees below are the ones substring search
+    made and ranking must keep: found by headline, by ticket, by body, across
+    both sections, case-insensitively, and empty when there is nothing.
+    """
 
-        assert len(results) == 1
-        assert "authentication" in results[0].headline.lower()
-
-    def test_search_by_ticket_id(
+    def test_a_task_is_found_by_headline_ticket_or_body(
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
-        """Test searching tasks by ticket ID."""
-        results = search_tasks("JIRA-1234")
+        """
+        GIVEN: tasks with distinctive headlines, ticket IDs and body text
+        WHEN:  each is searched for
+        THEN:  the task is found
 
-        assert len(results) == 1
-        assert "JIRA-1234" in results[0].headline
+        A ticket ID stays one term rather than splitting into "jira" and
+        "1234", which is what makes searching for it precise.
+        """
+        by_headline = search_tasks("authentication").payloads
+        by_ticket = search_tasks("JIRA-1234").payloads
+        by_body = search_tasks("auth flow").payloads
 
-    def test_search_by_content(self, sample_tasks_file: TasksFileInfo) -> None:
-        """Test searching tasks by body content."""
-        results = search_tasks("auth flow")
+        with check:
+            assert any(
+                "authentication" in t.headline.lower() for t in by_headline
+            )
+        with check:
+            assert [t for t in by_ticket if "JIRA-1234" in t.headline]
+        with check:
+            assert any("auth" in t.content.lower() for t in by_body)
 
-        assert len(results) >= 1
-        # The task with "auth flow" in description should be found
-        assert any("auth" in t.content.lower() for t in results)
-
-    def test_search_across_sections(
+    def test_search_spans_both_sections_and_ignores_case(
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
-        """Test that search finds tasks in both Active and Completed sections."""
-        # Search for something that matches tasks in both sections
-        results = search_tasks("JIRA")
+        """
+        GIVEN: matching tasks in the active and the completed section
+        WHEN:  a term common to both is searched for, in any case
+        THEN:  both are returned, and case makes no difference
+        """
+        found = search_tasks("JIRA").payloads
 
-        # Should find both JIRA-1234 (active) and JIRA-4321 (completed)
-        assert len(results) == 2
-        sections = {t.section for t in results}
-        assert "Tasks" in sections
-        assert "Completed Tasks" in sections
+        with check:
+            assert {t.section for t in found} == {"Tasks", "Completed Tasks"}
+        with check:
+            assert len(search_tasks("authentication").hits) == len(
+                search_tasks("AUTHENTICATION").hits
+            )
 
-    def test_search_no_results(self, sample_tasks_file: TasksFileInfo) -> None:
-        """Test search with no matching results."""
+    def test_a_search_for_something_absent_comes_back_empty(
+        self, sample_tasks_file: TasksFileInfo
+    ) -> None:
+        """
+        GIVEN: a query naming something no task contains
+        WHEN:  it is searched for
+        THEN:  nothing is returned and the unknown term is reported
+
+        Ranking is generous about what matches, so this is the guarantee most
+        at risk from it.
+        """
         results = search_tasks("xyzzy-not-found")
 
-        assert len(results) == 0
+        with check:
+            assert not results.hits
+        with check:
+            assert results.absent_terms == ["xyzzy-not-found"]
 
-    def test_search_case_insensitive(
+    def test_search_can_be_narrowed_to_a_section_or_to_headlines(
         self, sample_tasks_file: TasksFileInfo
     ) -> None:
-        """Test that search is case-insensitive."""
-        results_lower = search_tasks("authentication")
-        results_upper = search_tasks("AUTHENTICATION")
-        results_mixed = search_tasks("Authentication")
+        """
+        GIVEN: matching tasks in both sections
+        WHEN:  the search is restricted to one section, and separately to
+               headlines
+        THEN:  each restriction narrows the result accordingly
+        """
+        active = search_tasks("JIRA", section="Tasks").payloads
+        headlines = search_tasks("JIRA", headline_only=True).payloads
 
-        assert len(results_lower) == len(results_upper) == len(results_mixed)
+        with check:
+            assert {t.section for t in active} == {"Tasks"}
+        with check:
+            assert headlines, "the ticket is in the headlines"
 
 
 class TestFormatSimpleDiff:

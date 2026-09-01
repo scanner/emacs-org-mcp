@@ -438,7 +438,9 @@ class TestHiddenTaskDetection:
         """
         assert [t.custom_id for t in list_tasks("Tasks")] == ["task-preceding"]
 
-        hits = [t.custom_id for t in search_tasks("UNIQUE_VICTIM_STRING")]
+        hits = [
+            t.custom_id for t in search_tasks("UNIQUE_VICTIM_STRING").payloads
+        ]
 
         assert "task-victim" not in hits
 
@@ -463,7 +465,7 @@ class TestHiddenTaskDetection:
 
         outputs = {
             "list": format_task_list(list_tasks("Tasks"), "Tasks"),
-            "search": format_task_search(search_tasks("task"), "task"),
+            "search": format_task_search(search_tasks("task")),
             "paged list": format_task_list(
                 list_tasks("Tasks"), "Tasks", limit=1, offset=1
             ),
@@ -646,7 +648,10 @@ class TestFalseDrawerCorruption:
         tasks_file = temp_org_dir / "tasks.org"
         tasks_file.write_text(false_drawer_file(": a: b"))
 
-        hits = [task.custom_id for task in search_tasks("UNIQUE_SWALLOWED")]
+        hits = [
+            t.custom_id
+            for t in search_tasks("UNIQUE_SWALLOWED_STRING").payloads
+        ]
 
         assert hits == ["task-old-done"]
 

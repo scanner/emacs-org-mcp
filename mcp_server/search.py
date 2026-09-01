@@ -210,11 +210,29 @@ class Query:
         raw: What the caller typed, kept for display and for snippets.
         terms: Stemmed terms, de-duplicated, in order of first appearance.
         phrases: Quoted runs, lowercased, which must appear verbatim.
+        originals: Each stem mapped back to the word it came from, so that
+            anything reported to the caller can be said in their own words. A
+            search that cannot find "erosion" should say so, not report "eros".
     """
 
     raw: str
     terms: list[str] = field(default_factory=list)
     phrases: list[str] = field(default_factory=list)
+    originals: dict[str, str] = field(default_factory=dict)
+
+    ###########################################################################
+    #
+    def as_typed(self, term: str) -> str:
+        """
+        Return a term as the caller wrote it.
+
+        Args:
+            term: A stemmed term
+
+        Returns:
+            The word it was stemmed from, or the term itself if unknown.
+        """
+        return self.originals.get(term, term)
 
     ###########################################################################
     #
@@ -244,11 +262,19 @@ def parse_query(raw: str) -> Query:
     phrases = [p.strip().lower() for p in PHRASE_RE.findall(raw) if p.strip()]
     remainder = PHRASE_RE.sub(" ", raw)
 
-    seen: dict[str, None] = {}
-    for term in terms(remainder, split_compounds=False):
-        seen.setdefault(term, None)
+    # Walked here rather than through terms() so that each stem keeps the word
+    # it came from. Same rules: compounds stay whole and unstemmed, everything
+    # else is stopworded and stemmed.
+    seen: dict[str, str] = {}
+    for word in TERM_RE.findall(remainder.lower()):
+        if "-" in word or "." in word:
+            seen.setdefault(word, word)
+        elif word not in STOPWORDS:
+            seen.setdefault(stem(word), word)
 
-    return Query(raw=raw, terms=list(seen), phrases=phrases)
+    return Query(
+        raw=raw, terms=list(seen), phrases=phrases, originals=dict(seen)
+    )
 
 
 # =============================================================================
@@ -354,6 +380,23 @@ class Results:
     absent_terms: list[str] = field(default_factory=list)
     order: str = "relevance"
     searched: int = 0
+
+    ###########################################################################
+    #
+    @property
+    def payloads(self) -> list[Any]:
+        """
+        Return the matching records themselves, in rank order.
+
+        Returns:
+            The domain objects the documents were built from -- Tasks,
+            JournalEntries or Projects.
+
+        Note:
+            For callers that want what matched rather than how well it
+            matched. The scores stay available on the hits.
+        """
+        return [hit.doc.payload for hit in self.hits]
 
 
 # =============================================================================
@@ -600,7 +643,9 @@ def search(
     index = Index.build(docs)
 
     searchable = [t for t in query.terms if index.document_freq.get(t)]
-    absent = [t for t in query.terms if not index.document_freq.get(t)]
+    absent = [
+        query.as_typed(t) for t in query.terms if not index.document_freq.get(t)
+    ]
 
     if query.terms and not searchable and not query.phrases:
         return Results(

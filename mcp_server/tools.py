@@ -356,8 +356,9 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="search_tasks",
             description=(
-                "Search tasks by query string across all sections. Case-insensitive substring match on headline "
-                "and content. Returns one compact line per matching task: status, ticket ID and headline. Task "
+                "Search tasks across all sections, ranked by relevance. The query is matched as terms, not as a "
+                'literal string, and inflections are matched too. Use "double quotes" for an exact phrase. '
+                "Returns one compact line per matching task plus the lines that matched. Task "
                 "bodies are NOT included -- call get_task for full content. Also reports any tasks the org parser "
                 "cannot see. "
                 "Use this to check for existing tasks before creating new ones, or to find tasks related to a topic. "
@@ -371,6 +372,29 @@ async def handle_list_tools() -> list[Tool]:
                         "description": "Search query (matches headline and content)",
                     },
                     **envelope_properties("snippet"),
+                    "section": {
+                        "type": "string",
+                        "enum": [
+                            global_state.config.active_section,
+                            global_state.config.completed_section,
+                        ],
+                        "description": "Restrict to one section. Omit to search both.",
+                    },
+                    "headline_only": {
+                        "type": "boolean",
+                        "description": (
+                            "Match headlines only, so results are records *about* the subject rather "
+                            "than every record that mentions it in passing."
+                        ),
+                    },
+                    "order": {
+                        "type": "string",
+                        "enum": ["relevance", "recent", "oldest", "matches"],
+                        "description": (
+                            "Result ordering, default relevance. matches orders by how much of the "
+                            "query each record covered."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -753,7 +777,7 @@ async def handle_list_tools() -> list[Tool]:
             name="search_projects",
             description=(
                 "Search across all projects by query string. Case-insensitive substring match "
-                "on project titles and all section content. Returns one compact line per matching project: "
+                "on titles and section content, ranked by relevance and matched as terms. Returns one compact line per matching project: "
                 "status, title and slug. Project content is NOT included -- call get_project for a project's "
                 "full content."
             ),
@@ -765,6 +789,21 @@ async def handle_list_tools() -> list[Tool]:
                         "description": "Search query (matches titles and content)",
                     },
                     **envelope_properties("snippet"),
+                    "headline_only": {
+                        "type": "boolean",
+                        "description": (
+                            "Match headlines only, so results are records *about* the subject rather "
+                            "than every record that mentions it in passing."
+                        ),
+                    },
+                    "order": {
+                        "type": "string",
+                        "enum": ["relevance", "recent", "oldest", "matches"],
+                        "description": (
+                            "Result ordering, default relevance. matches orders by how much of the "
+                            "query each record covered."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -928,10 +967,14 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return [TextContent(type="text", text=output)]
 
             case "search_tasks":
-                tasks = search_tasks(arguments["query"])
-                output = format_task_search(
-                    tasks,
+                results = search_tasks(
                     arguments["query"],
+                    section=arguments.get("section"),
+                    headline_only=arguments.get("headline_only", False),
+                    order=arguments.get("order", "relevance"),
+                )
+                output = format_task_search(
+                    results,
                     detail=arguments.get("detail", "snippet"),
                     limit=arguments.get("limit"),
                     offset=arguments.get("offset", 0),
@@ -1079,10 +1122,14 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return [TextContent(type="text", text=output)]
 
             case "search_projects":
-                projects = search_projects(arguments["query"])
-                output = format_project_search(
-                    projects,
+                results = search_projects(
                     arguments["query"],
+                    status=arguments.get("status"),
+                    headline_only=arguments.get("headline_only", False),
+                    order=arguments.get("order", "relevance"),
+                )
+                output = format_project_search(
+                    results,
                     detail=arguments.get("detail", "snippet"),
                     limit=arguments.get("limit"),
                     offset=arguments.get("offset", 0),

@@ -20,6 +20,7 @@ from mcp_server.results import (
     Record,
     render,
 )
+from mcp_server.search import Results, SearchDoc, search
 from mcp_server.utils import (
     format_age,
     format_simple_diff,
@@ -1391,26 +1392,93 @@ def move_task(
 
 ###############################################################################
 #
-def search_tasks(query: str) -> list[Task]:
+class TaskCorpus:
     """
-    Search tasks across all sections.
+    The tasks in tasks.org, as searchable documents.
+
+    Implements :class:`~mcp_server.search.Corpus`. A missing tasks.org is an
+    empty corpus rather than an error, since another org-mode installation may
+    not keep one.
+    """
+
+    ###########################################################################
+    #
+    def __init__(
+        self, section: str | None = None, headline_only: bool = False
+    ) -> None:
+        """
+        Args:
+            section: Restrict to one section, or None for every section
+            headline_only: Index only headlines, so a query matches what a
+                task is *about* rather than anything mentioned in its body
+        """
+        self.section = section
+        self.headline_only = headline_only
+
+    ###########################################################################
+    #
+    def documents(self) -> list[SearchDoc]:
+        """
+        Return every task in scope, as a search document.
+
+        Returns:
+            One document per task, in file order.
+        """
+        sections = (
+            [self.section]
+            if self.section
+            else [
+                global_state.config.active_section,
+                global_state.config.completed_section,
+            ]
+        )
+
+        docs: list[SearchDoc] = []
+        for name in sections:
+            for task in list_tasks(name):
+                docs.append(
+                    SearchDoc(
+                        ref=task.custom_id or task.headline,
+                        headline=task.headline,
+                        body="" if self.headline_only else task.content,
+                        # Recency for a task is when it last changed, which is
+                        # what "what was I doing on this lately" means.
+                        sort_key=task.modified or task.created,
+                        payload=task,
+                    )
+                )
+
+        return docs
+
+
+###############################################################################
+#
+def search_tasks(
+    query: str,
+    section: str | None = None,
+    headline_only: bool = False,
+    order: str = "relevance",
+) -> Results:
+    """
+    Search tasks, ranked by relevance.
 
     Args:
-        query: Search query string (case-insensitive)
+        query: Search terms, with optional "quoted phrases"
+        section: Restrict to one section, or None for all
+        headline_only: Match against headlines rather than whole tasks
+        order: One of the search module's orderings
 
     Returns:
-        List of tasks matching the query in headline or content
-    """
-    all_tasks = []
-    all_tasks.extend(list_tasks(global_state.config.active_section))
-    all_tasks.extend(list_tasks(global_state.config.completed_section))
+        Ranked :class:`~mcp_server.search.Results`, whose hits carry the
+        matching :class:`Task` as their payload.
 
-    query_lower = query.lower()
-    return [
-        t
-        for t in all_tasks
-        if query_lower in t.headline.lower() or query_lower in t.content.lower()
-    ]
+    Note:
+        Relevance rather than recency by default: a task list is not a
+        chronology, and a task is looked for by what it is about.
+    """
+    corpus = TaskCorpus(section=section, headline_only=headline_only)
+
+    return search(corpus.documents(), query, order=order)
 
 
 # =============================================================================
@@ -1697,37 +1765,56 @@ def format_task_list(
 ###############################################################################
 #
 def format_task_search(
-    tasks: list[Task],
-    query: str,
+    results: Results,
     detail: DetailLevel = "snippet",
     limit: int | None = None,
     offset: int = 0,
 ) -> str:
     """
-    Format task search results.
+    Format ranked task search results.
 
     Args:
-        tasks: Matching tasks
-        query: The query that produced them, used to build snippets
+        results: What the search returned
         detail: Envelope detail level, defaulting to snippet so a result shows
             why it matched and not merely that it did
         limit: Maximum matches to show; None takes the level's default
         offset: Matches to skip
 
     Returns:
-        A rendered page carrying the same parser warning as a listing. A task
-        hidden from the parser makes search miss it silently, or answer with
-        the task that absorbed it, so the warning matters most here.
+        A rendered page carrying the same parser warning as a listing, plus
+        any query terms no task contains.
+
+    Note:
+        The parser warning matters more here than anywhere. A task hidden from
+        the parser makes a search miss it silently, or answer with the task
+        that absorbed it -- and either reads like an ordinary result.
     """
+    records = []
+    for hit in results.hits:
+        record = task_to_record(hit.doc.payload)
+        record.score = hit.score
+        record.matched_terms = hit.matched_terms
+        record.total_terms = hit.total_terms
+        records.append(record)
+
+    warnings = task_warnings()
+    if results.absent_terms:
+        warnings.append(
+            "No task contains: "
+            + ", ".join(results.absent_terms)
+            + " -- these were ignored when matching."
+        )
+
     return render(
-        [task_to_record(task) for task in tasks],
+        records,
         tool="search_tasks",
-        header=f'search_tasks("{query}")',
+        header=f'search_tasks("{results.query.raw}")',
         detail=detail,
         limit=limit,
         offset=offset,
-        query_terms=[query],
-        warnings=task_warnings(),
+        query_terms=results.query.terms,
+        order=results.order,
+        warnings=warnings,
     )
 
 
