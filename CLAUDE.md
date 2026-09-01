@@ -250,6 +250,45 @@ cycle after that is a fixed point. Regression tests are in
 write, so whole-file round trips are still not byte-stable. That is tracked
 separately and drawer formatting cannot fix it.
 
+### Position Is Priority (`mcp_server/tasks.py`)
+
+The top of the active section is what to work on next. A task that is never
+picked up drifts down until its position is itself the signal that it no longer
+matters. That makes file order load-bearing data, not presentation.
+
+Every path that files a task goes through `place_child()`, never `add_child()`
+directly. All three entry points used to append — to the *bottom*, which is
+where passed-over work accumulates:
+
+| operation | was | now |
+|---|---|---|
+| `create_task` | bottom | top |
+| `move_task` | bottom | top of target |
+| `update_task` (section change, either way) | bottom | top |
+| `update_task` (same section) | preserved | preserved |
+
+Reopening a `DONE` task is a strong signal it matters, and it used to be
+buried. Finishing one now puts it at the top of Completed, so that list reads
+newest-first. A same-section edit still preserves position: editing a task says
+nothing about its priority and must not quietly promote it.
+
+`position` is `top` / `bottom` / `before` / `after`, with `relative_to` naming
+the anchor for the last two. **Not integer indices** — an index shifts every
+time anything moves, so a caller would have to recompute one per call.
+`before`/`after` express *ordering only*: a task placed after another is
+follow-on work, not work blocked by it, and may proceed while the other is
+still open. Do not model it as a dependency.
+
+`reorder_task()` is a pure permutation, so it enforces a stricter check than
+the general write guard: the section must hold exactly the same tasks
+afterwards. It performs no ediff approval, because nothing about the task
+changes — only its position, which is what was asked for.
+
+`resort_completed_tasks()` is deliberately **not** automatic. New completions
+already go to the top; this exists to close the seam above tasks completed
+before that was true, and to be run on request. Undated tasks sort last in
+their existing order rather than being given an invented date.
+
 ### Bounded Read Surface (`mcp_server/results.py`)
 
 Every list and search tool renders through one envelope, so there is a single
@@ -483,6 +522,8 @@ Key elements:
 | `create_task` | Create new task from org-formatted string |
 | `update_task` | Update task; auto-moves if status changes |
 | `move_task` | Move task between sections |
+| `reorder_task` | Move a task within its section (position = priority) |
+| `resort_completed_tasks` | One-off: sort completed newest-first by `:CLOSED:` |
 | `search_tasks` | Search tasks by query |
 
 ### Journal Tools
