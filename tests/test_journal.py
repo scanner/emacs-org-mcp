@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
+from pytest_check import check
 
 from mcp_server.journal import (
     create_journal_entry,
@@ -497,65 +498,172 @@ class TestUpdateJournalEntry:
 
 
 class TestSearchJournal:
-    """Tests for search_journal function."""
+    """
+    Tests for searching journal entries.
 
-    def test_search_by_headline(
+    Search returns ranked results rather than a filtered list, so a hit
+    carries its entry as a payload alongside its score and how much of the
+    query it covered. The guarantees below are the ones the substring search
+    made and that ranking must keep -- finding an entry by its headline or its
+    body, ignoring case, honouring the window, and coming back empty when
+    there is genuinely nothing.
+    """
+
+    def entries(self, results) -> list:
+        """The matching entries, in rank order."""
+        return [hit.doc.payload for hit in results.hits]
+
+    def test_an_entry_is_found_by_headline_or_body_whatever_the_case(
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
-        """Test searching journal entries by headline."""
-        results = search_journal("JIRA-1234")
+        """
+        GIVEN: journal entries with distinctive words in their headlines and
+               their bodies
+        WHEN:  each is searched for, in either case
+        THEN:  the entry is found, and case makes no difference
+        """
+        by_headline = self.entries(search_journal("JIRA-1234", days_back=0))
+        by_body = self.entries(search_journal("root cause", days_back=0))
 
-        assert len(results) >= 1
-        assert any("JIRA-1234" in e.headline for e in results)
+        with check:
+            assert any("JIRA-1234" in e.headline for e in by_headline)
+        with check:
+            assert any("root cause" in e.content.lower() for e in by_body)
+        with check:
+            assert len(search_journal("meeting", days_back=0).hits) == len(
+                search_journal("MEETING", days_back=0).hits
+            )
 
-    def test_search_by_content(
+    def test_a_search_for_something_absent_comes_back_empty(
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
-        """Test searching journal entries by content."""
-        results = search_journal("root cause")
+        """
+        GIVEN: a query naming something that appears nowhere
+        WHEN:  it is searched for
+        THEN:  no entries are returned, and the unknown term is reported
 
-        assert len(results) >= 1
-        assert any("root cause" in e.content.lower() for e in results)
+        An existence check has to be able to fail. Ranking is generous about
+        what matches, so this is the guarantee most at risk from it: a term
+        the corpus has never seen is excluded from matching rather than
+        loosely matched, and when every term is unknown the answer is nothing.
+        """
+        results = search_journal("xyzzy-not-found-anywhere", days_back=0)
 
-    def test_search_case_insensitive(
-        self, sample_journal_files: JournalFilesInfo
+        with check:
+            assert not results.hits
+        with check:
+            assert results.absent_terms == ["xyzzy-not-found-anywhere"]
+
+    def test_the_window_bounds_which_days_are_searched(
+        self, temp_org_dir: Path
     ) -> None:
-        """Test that search is case-insensitive."""
-        results_lower = search_journal("meeting")
-        results_upper = search_journal("MEETING")
+        """
+        GIVEN: entries written today and ten days ago
+        WHEN:  the search window is narrower than, then wider than, that gap
+        THEN:  only the entries inside the window are returned
 
-        assert len(results_lower) == len(results_upper)
-
-    def test_search_no_results(
-        self, sample_journal_files: JournalFilesInfo
-    ) -> None:
-        """Test search with no matching results."""
-        results = search_journal("xyzzy-not-found-anywhere")
-
-        assert len(results) == 0
-
-    def test_search_days_back_limit(self, temp_org_dir: Path) -> None:
-        """Test that days_back parameter limits search scope."""
+        The window has three spellings -- days_back, since and until -- and
+        all of them resolve through one function, so they cannot disagree.
+        """
         journal_dir = temp_org_dir / "journal"
-
-        # Create entries for today and 10 days ago
         today = date.today()
         old_date = today - timedelta(days=10)
 
-        today_entry = make_journal_entry("10:00", "Today unique marker")
-        old_entry = make_journal_entry("10:00", "Old unique marker")
+        (journal_dir / today.strftime("%Y%m%d")).write_text(
+            make_journal_file(
+                [make_journal_entry("10:00", "Today unique marker")], today
+            )
+        )
+        (journal_dir / old_date.strftime("%Y%m%d")).write_text(
+            make_journal_file(
+                [make_journal_entry("10:00", "Old unique marker")], old_date
+            )
+        )
 
-        today_file = journal_dir / today.strftime("%Y%m%d")
-        old_file = journal_dir / old_date.strftime("%Y%m%d")
+        narrow = self.entries(search_journal("unique marker", days_back=5))
+        wide = self.entries(search_journal("unique marker", days_back=15))
+        dated = self.entries(
+            search_journal(
+                "unique marker", days_back=0, since=today.isoformat()
+            )
+        )
 
-        today_file.write_text(make_journal_file([today_entry], today))
-        old_file.write_text(make_journal_file([old_entry], old_date))
+        with check:
+            assert len(narrow) == 1
+        with check:
+            assert "Today" in narrow[0].headline
+        with check:
+            assert len(wide) == 2
+        with check:
+            assert len(dated) == 1, "since should bound it like days_back"
 
-        # Search with 5 days back - should only find today's
-        results_5_days = search_journal("unique marker", days_back=5)
-        assert len(results_5_days) == 1
-        assert "Today" in results_5_days[0].headline
+    def test_results_can_be_narrowed_to_tags_or_to_headlines(
+        self, temp_org_dir: Path
+    ) -> None:
+        """
+        GIVEN: entries where a word appears in one entry's headline and
+               another entry's body, one of them tagged
+        WHEN:  the search is restricted by tag, and separately to headlines
+        THEN:  each restriction returns only the entry it should
 
-        # Search with 15 days back - should find both
-        results_15_days = search_journal("unique marker", days_back=15)
-        assert len(results_15_days) == 2
+        headline_only asks what an entry is *about* rather than what it
+        happens to mention, which is the difference between finding the entry
+        on a subject and finding every entry that referred to it in passing.
+        """
+        today = date.today()
+        (temp_org_dir / "journal" / today.strftime("%Y%m%d")).write_text(
+            make_journal_file(
+                [
+                    "** 09:00 Quernstone rollout :decision:\n- the headline one",
+                    "** 10:00 Unrelated work\n- mentions quernstone in passing",
+                ],
+                today,
+            )
+        )
+
+        tagged = self.entries(
+            search_journal("quernstone", days_back=0, tags=["decision"])
+        )
+        headlines = self.entries(
+            search_journal("quernstone", days_back=0, headline_only=True)
+        )
+        everything = self.entries(search_journal("quernstone", days_back=0))
+
+        with check:
+            assert len(everything) == 2, "both entries mention it"
+        with check:
+            assert [e.time for e in tagged] == ["09:00"]
+        with check:
+            assert [e.time for e in headlines] == ["09:00"]
+
+    def test_a_ranked_search_puts_the_better_match_first(
+        self, temp_org_dir: Path
+    ) -> None:
+        """
+        GIVEN: two entries, one about the subject and one mentioning it once
+        WHEN:  the subject is searched for by relevance
+        THEN:  the entry about it ranks first, and each hit reports how much
+               of the query it covered
+        """
+        today = date.today()
+        (temp_org_dir / "journal" / today.strftime("%Y%m%d")).write_text(
+            make_journal_file(
+                [
+                    "** 09:00 Passing mention\n- we also touched quernstone",
+                    "** 10:00 Quernstone design review\n- quernstone shape "
+                    "and quernstone tradeoffs",
+                ],
+                today,
+            )
+        )
+
+        results = search_journal(
+            "quernstone design", days_back=0, order="relevance"
+        )
+
+        with check:
+            assert results.hits[0].doc.payload.time == "10:00"
+        with check:
+            assert results.hits[0].matched_terms == 2
+        with check:
+            assert all(h.total_terms == 2 for h in results.hits)

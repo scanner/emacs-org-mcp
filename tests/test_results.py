@@ -87,20 +87,27 @@ class TestResultEnvelope:
         """
         with check:
             assert snippet_lines(
-                "alpha\nbravo\nNEEDLE here\ndelta\necho", "needle"
+                "alpha\nbravo\nNEEDLE here\ndelta\necho", ["needle"]
             ) == ["bravo", "NEEDLE here", "delta"]
 
         flood = "\n".join(f"match {i}" for i in range(200))
         with check:
-            assert len(snippet_lines(flood, "match")) == MAX_SNIPPET_LINES
+            assert len(snippet_lines(flood, ["match"])) == MAX_SNIPPET_LINES
 
-        for content, query, why in [
-            ("some text", "", "no query"),
-            ("", "needle", "no content"),
-            ("some text", "absent", "no match"),
+        for content, query_terms, why in [
+            ("some text", [], "no terms"),
+            ("", ["needle"], "no content"),
+            ("some text", ["absent"], "no match"),
         ]:
             with check:
-                assert snippet_lines(content, query) == [], why
+                assert snippet_lines(content, query_terms) == [], why
+
+        # A ranked search matches on stems, so the snippet must too: matching
+        # the raw query instead shows nothing for a record that ranked well.
+        with check:
+            assert snippet_lines("Compaction of the bucket", ["compact"]) == [
+                "Compaction of the bucket"
+            ], "a stem must find the word it came from"
 
     ####################################################################
     #
@@ -210,7 +217,9 @@ class TestResultEnvelope:
             assert page(detail="full").count("the NEEDLE line") == 2
 
         with check:
-            assert "> the NEEDLE line" in page(detail="snippet", query="needle")
+            assert "> the NEEDLE line" in page(
+                detail="snippet", query_terms=["needle"]
+            )
 
         no_query = page(detail="snippet")
         with check:

@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "faker>=37.0.0",
     "mypy>=1.14.0",
     "pre-commit>=4.0.0",
     "pytest>=8.0.0",

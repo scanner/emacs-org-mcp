@@ -15,6 +15,7 @@ from mcp_server.results import (
     Record,
     render,
 )
+from mcp_server.search import Results, SearchDoc, search
 from mcp_server.utils import (
     backup_file,
     format_age,
@@ -898,29 +899,82 @@ def update_project(
 
 ###############################################################################
 #
-def search_projects(query: str) -> list[Project]:
+class ProjectCorpus:
     """
-    Search across all projects by query string.
+    The project files, as searchable documents.
 
-    Case-insensitive substring match on title and all section content.
+    Implements :class:`~mcp_server.search.Corpus`. An absent projects
+    directory is an empty corpus rather than an error.
+    """
+
+    ###########################################################################
+    #
+    def __init__(
+        self, status: str | None = None, headline_only: bool = False
+    ) -> None:
+        """
+        Args:
+            status: Restrict to projects with this status, or None for all
+            headline_only: Index only titles, so a query matches what a
+                project *is* rather than anything its sections mention
+        """
+        self.status = status
+        self.headline_only = headline_only
+
+    ###########################################################################
+    #
+    def documents(self) -> list[SearchDoc]:
+        """
+        Return every project in scope, as a search document.
+
+        Returns:
+            One document per project.
+        """
+        docs: list[SearchDoc] = []
+
+        for project in list_projects(self.status):
+            body = (
+                ""
+                if self.headline_only
+                else "\n".join(project.sections.values())
+            )
+            docs.append(
+                SearchDoc(
+                    ref=project.slug,
+                    headline=f"{project.title} {' '.join(project.tags)}".strip(),
+                    body=body,
+                    sort_key=project.modified or project.created,
+                    payload=project,
+                )
+            )
+
+        return docs
+
+
+###############################################################################
+#
+def search_projects(
+    query: str,
+    status: str | None = None,
+    headline_only: bool = False,
+    order: str = "relevance",
+) -> Results:
+    """
+    Search projects, ranked by relevance.
 
     Args:
-        query: Search query string
+        query: Search terms, with optional "quoted phrases"
+        status: Restrict to projects with this status
+        headline_only: Match against titles rather than whole projects
+        order: One of the search module's orderings
 
     Returns:
-        List of matching Project objects
+        Ranked :class:`~mcp_server.search.Results`, whose hits carry the
+        matching :class:`Project` as their payload.
     """
-    query_lower = query.lower()
-    matches: list[Project] = []
+    corpus = ProjectCorpus(status=status, headline_only=headline_only)
 
-    for p in list_projects():
-        searchable = p.title.lower()
-        for section_content in p.sections.values():
-            searchable += " " + section_content.lower()
-        if query_lower in searchable:
-            matches.append(p)
-
-    return matches
+    return search(corpus.documents(), query, order=order)
 
 
 ###############################################################################
@@ -1054,18 +1108,16 @@ def format_project_list(
 ###############################################################################
 #
 def format_project_search(
-    projects: list[Project],
-    query: str,
+    results: Results,
     detail: DetailLevel = "snippet",
     limit: int | None = None,
     offset: int = 0,
 ) -> str:
     """
-    Format project search results.
+    Format ranked project search results.
 
     Args:
-        projects: Matching projects
-        query: The query that produced them, used to build snippets
+        results: What the search returned
         detail: Envelope detail level, defaulting to snippet
         limit: Maximum matches to show; None takes the level's default
         offset: Matches to skip
@@ -1077,14 +1129,32 @@ def format_project_search(
         A project matches on any of its sections, so the snippet is what says
         which part of it the query actually hit.
     """
+    records = []
+    for hit in results.hits:
+        record = project_to_record(hit.doc.payload)
+        record.score = hit.score
+        record.matched_terms = hit.matched_terms
+        record.total_terms = hit.total_terms
+        records.append(record)
+
+    warnings = []
+    if results.absent_terms:
+        warnings.append(
+            "No project contains: "
+            + ", ".join(results.absent_terms)
+            + " -- these were ignored when matching."
+        )
+
     return render(
-        [project_to_record(project) for project in projects],
+        records,
         tool="search_projects",
-        header=f'search_projects("{query}")',
+        header=f'search_projects("{results.query.raw}")',
         detail=detail,
         limit=limit,
         offset=offset,
-        query=query,
+        query_terms=results.query.terms,
+        order=results.order,
+        warnings=warnings,
     )
 
 

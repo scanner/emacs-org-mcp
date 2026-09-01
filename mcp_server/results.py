@@ -164,33 +164,49 @@ def format_size(lines: int, chars: int) -> str:
 
 ###############################################################################
 #
-def snippet_lines(content: str, query: str) -> list[str]:
+def snippet_lines(content: str, query_terms: list[str]) -> list[str]:
     """
     Return the lines of ``content`` that matched, with surrounding context.
 
     Args:
         content: The record body
-        query: The query that produced this result
+        query_terms: The terms the search matched on. A ranked search passes
+            its parsed, stemmed terms; an unranked one passes its raw query
+            as a single term.
 
     Returns:
         Up to :data:`MAX_SNIPPET_LINES` lines, trimmed and de-duplicated, in
         document order. Empty when nothing matches.
 
     Note:
-        Matching is case-insensitive substring, which is what the search
-        functions currently do. When ranking arrives this should take the
-        parsed query terms instead, so a snippet shows every term that hit
-        rather than the raw string.
+        This takes terms rather than the raw query because ranking matches on
+        terms. Matching the raw string instead means a record that ranked
+        highly shows *no* snippet at all -- searching "compaction of the rule
+        migration bucket" finds the right records and then displays nothing,
+        because that phrase appears in none of them.
+
+        Terms are matched as case-insensitive substrings, which finds the
+        whole word a stem came from: the stemmer only rewrites suffixes, so a
+        stem is a prefix of its word and "compact" is found inside
+        "compaction".
+
+        Terms are deliberately not imported from the search module. They are
+        data, and keeping them so is what lets this envelope stay ignorant of
+        how any particular caller decided what matched.
     """
-    if not content or not query:
+    if not content or not query_terms:
         return []
 
     lines = content.split("\n")
-    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    patterns = [
+        re.compile(re.escape(term), re.IGNORECASE)
+        for term in query_terms
+        if term
+    ]
 
     wanted: set[int] = set()
     for idx, line in enumerate(lines):
-        if pattern.search(line):
+        if any(pattern.search(line) for pattern in patterns):
             lo = max(0, idx - SNIPPET_CONTEXT)
             hi = min(len(lines), idx + SNIPPET_CONTEXT + 1)
             wanted.update(range(lo, hi))
@@ -201,14 +217,13 @@ def snippet_lines(content: str, query: str) -> list[str]:
 
 ###############################################################################
 #
-def render_record(record: Record, number: int, query: str) -> str:
+def render_record(record: Record, number: int) -> str:
     """
     Render one record's index line.
 
     Args:
         record: The record to render
         number: Its position in the overall result set, 1-based
-        query: The active query, used only to decide nothing here
 
     Returns:
         A single line.
@@ -241,7 +256,7 @@ def render(
     detail: DetailLevel = "index",
     limit: int | None = None,
     offset: int = 0,
-    query: str = "",
+    query_terms: list[str] | None = None,
     order: str = "",
     warnings: list[str] | None = None,
 ) -> str:
@@ -255,14 +270,15 @@ def render(
         header: What was listed or searched, e.g. ``Tasks`` or
             ``search_journal("compaction")``
         detail: One of ``index``, ``snippet`` or ``full``. ``snippet`` falls
-            back to ``index`` when there is no query to match against, which
+            back to ``index`` when there are no terms to match against, which
             is every list tool -- rejecting it instead would make a parameter's
             validity depend on which tool it was passed to.
         limit: Maximum records to render. None takes the default for the
             detail level in effect, which keeps a response about the same
             size whichever level was asked for.
         offset: Records to skip
-        query: The active query, used to build snippets
+        query_terms: The terms the search matched on, used to build
+            snippets. An unranked caller passes its raw query as one term.
         order: Ordering in effect, named in the header when given
         warnings: Lines that must reach the caller on *every* page, such as
             the report of tasks the parser cannot see. Callers must pass these
@@ -279,9 +295,10 @@ def render(
         agent reading this cannot be relied on to infer it.
     """
     warnings = warnings or []
+    query_terms = query_terms or []
     total = len(records)
 
-    if detail == "snippet" and not query:
+    if detail == "snippet" and not query_terms:
         detail = "index"
 
     # Resolved after the fallback above, so a snippet request with no query
@@ -323,13 +340,13 @@ def render(
     lines.append("")
 
     for idx, record in enumerate(page, start=first):
-        lines.append(render_record(record, idx, query))
+        lines.append(render_record(record, idx))
 
         match detail:
             case "snippet":
                 lines.extend(
                     f"        > {line}"
-                    for line in snippet_lines(record.content, query)
+                    for line in snippet_lines(record.content, query_terms)
                 )
             case "full":
                 if record.content.strip():

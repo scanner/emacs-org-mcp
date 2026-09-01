@@ -16,6 +16,7 @@ from mcp_server.results import (
     format_size,
     render,
 )
+from mcp_server.search import Results, SearchDoc, search
 from mcp_server.utils import (
     backup_file,
     format_simple_diff,
@@ -535,41 +536,183 @@ def list_journal_dates(
 
 ###############################################################################
 #
-def search_journal(query: str, days_back: int = 30) -> list[JournalEntry]:
+def resolve_window(
+    days_back: int | None, since: str, until: str
+) -> tuple[str, str]:
     """
-    Search journal entries within recent days.
+    Work out the date range a search covers.
 
     Args:
-        query: Search query string (case-insensitive)
-        days_back: Number of days to search back (default 30)
+        days_back: How many days back to look. ``0`` or None means no lower
+            bound.
+        since: Explicit earliest date, ``YYYY-MM-DD``, overriding days_back
+        until: Explicit latest date, ``YYYY-MM-DD``
 
     Returns:
-        List of matching journal entries
+        ``(since, until)`` as ISO dates, where ``""`` means unbounded.
 
     Note:
-        Searches in both headline and content.
-        Skips files that don't exist.
+        A window has three spellings and this is the only place that resolves
+        them, so every caller agrees on what "windowed" means -- including
+        :func:`default_order`, which changes behaviour based on it.
     """
-    matches = []
-    query_lower = query.lower()
-
-    for i in range(days_back):
-        target_date = date.today() - timedelta(days=i)
-        file_path = get_journal_path(target_date)
-
-        if file_path.exists():
-            entries = parse_journal_entries(file_path)
-            for entry in entries:
-                searchable = f"{entry.headline} {entry.content}".lower()
-                if query_lower in searchable:
-                    matches.append(entry)
-
-    return matches
+    if since:
+        return (since, until)
+    if days_back:
+        earliest = date.today() - timedelta(days=days_back)
+        return (earliest.isoformat(), until)
+    return ("", until)
 
 
-# =============================================================================
-# Journal Formatting
-# =============================================================================
+###############################################################################
+#
+def default_order(since: str) -> str:
+    """
+    Choose an ordering when the caller did not.
+
+    Args:
+        since: The window's lower bound, ``""`` when unbounded
+
+    Returns:
+        ``recent`` for a bounded window, ``relevance`` otherwise.
+
+    Note:
+        Asking about the last fortnight is asking what happened recently, so
+        recency is the useful order. Asking across years is asking where
+        something is, and only ranking can answer that.
+    """
+    return "recent" if since else "relevance"
+
+
+###############################################################################
+###############################################################################
+#
+class JournalCorpus:
+    """
+    The journal entries in a date range, as searchable documents.
+
+    Implements :class:`~mcp_server.search.Corpus`. An absent journal directory
+    is an empty corpus rather than an error: another org-mode installation may
+    keep no journal at all.
+    """
+
+    ###########################################################################
+    #
+    def __init__(
+        self,
+        since: str = "",
+        until: str = "",
+        tags: list[str] | None = None,
+        headline_only: bool = False,
+    ) -> None:
+        """
+        Args:
+            since: Earliest date to include, ``YYYY-MM-DD``, or unbounded
+            until: Latest date to include, ``YYYY-MM-DD``, or unbounded
+            tags: Only include entries carrying all of these tags
+            headline_only: Index only headlines, so a query matches what an
+                entry is *about* rather than anything mentioned inside it
+        """
+        self.since = since
+        self.until = until
+        self.tags = [t.strip(":").lower() for t in (tags or [])]
+        self.headline_only = headline_only
+
+    ###########################################################################
+    #
+    def documents(self) -> list["SearchDoc"]:
+        """
+        Return every journal entry in range, as a search document.
+
+        Returns:
+            One document per entry, newest files last.
+
+        Note:
+            Scans the directory rather than walking a day at a time, which is
+            what makes an unbounded range affordable. The filename filter is
+            load-bearing: the journal directory also holds Emacs backups, lock
+            files and the server's own ``.bak`` files.
+        """
+        journal_dir = global_state.config.journal_dir
+        if not journal_dir.exists():
+            return []
+
+        docs: list[SearchDoc] = []
+
+        for path in sorted(journal_dir.iterdir()):
+            if not JOURNAL_FILENAME_RE.match(path.name):
+                continue
+
+            day = path.stem
+            iso = f"{day[:4]}-{day[4:6]}-{day[6:8]}"
+            if self.since and iso < self.since:
+                continue
+            if self.until and iso > self.until:
+                continue
+
+            for entry in parse_journal_entries(path):
+                if self.tags:
+                    present = {t.lower() for t in entry.tags}
+                    if not all(tag in present for tag in self.tags):
+                        continue
+
+                # Tags ride along with the headline so that searching for one
+                # as a word works even without the structured filter.
+                tag_text = " ".join(entry.tags)
+                docs.append(
+                    SearchDoc(
+                        ref=f"{iso} {entry.time}",
+                        headline=f"{entry.headline} {tag_text}".strip(),
+                        body="" if self.headline_only else entry.content,
+                        sort_key=f"{day} {entry.time}",
+                        payload=entry,
+                    )
+                )
+
+        return docs
+
+
+###############################################################################
+#
+def search_journal(
+    query: str,
+    days_back: int | None = 30,
+    since: str = "",
+    until: str = "",
+    tags: list[str] | None = None,
+    headline_only: bool = False,
+    order: str = "",
+) -> Results:
+    """
+    Search journal entries, ranked by relevance.
+
+    Args:
+        query: Search terms, with optional "quoted phrases"
+        days_back: Days back to search. ``0`` searches everything.
+        since: Earliest date, ``YYYY-MM-DD``, overriding days_back
+        until: Latest date, ``YYYY-MM-DD``
+        tags: Only entries carrying all of these tags
+        headline_only: Match against headlines rather than whole entries
+        order: One of the search module's orderings. Defaults by window --
+            see :func:`default_order`.
+
+    Returns:
+        Ranked :class:`~mcp_server.search.Results`, whose hits carry the
+        matching :class:`JournalEntry` as their payload.
+    """
+    window_since, window_until = resolve_window(days_back, since, until)
+    corpus = JournalCorpus(
+        since=window_since,
+        until=window_until,
+        tags=tags,
+        headline_only=headline_only,
+    )
+
+    return search(
+        corpus.documents(),
+        query,
+        order=order or default_order(window_since),
+    )
 
 
 ###############################################################################
@@ -733,34 +876,56 @@ def format_journal_list(
 ###############################################################################
 #
 def format_journal_search(
-    entries: list[JournalEntry],
-    query: str,
+    results: Results,
     detail: DetailLevel = "snippet",
     limit: int | None = None,
     offset: int = 0,
 ) -> str:
     """
-    Format journal search results.
+    Format ranked journal search results.
 
     Args:
-        entries: Matching entries
-        query: The query that produced them, used to build snippets
+        results: What the search returned
         detail: Envelope detail level, defaulting to snippet
         limit: Maximum matches to show; None takes the level's default
         offset: Matches to skip
 
     Returns:
-        A rendered page. Entries are dated, since a search spans days and
-        when something was written is usually half the answer.
+        A rendered page. Entries are dated, since a search spans days and when
+        something was written is usually half the answer.
+
+    Note:
+        Terms the corpus has never seen are reported above the results, in the
+        envelope's warnings slot, so they cannot be paged past. They are the
+        most useful thing a search can say when it disappoints: either a typo,
+        or the part of the question this journal cannot answer.
     """
+    records = []
+    for hit in results.hits:
+        record = journal_entry_to_record(hit.doc.payload, show_date=True)
+        record.score = hit.score
+        record.matched_terms = hit.matched_terms
+        record.total_terms = hit.total_terms
+        records.append(record)
+
+    warnings = []
+    if results.absent_terms:
+        warnings.append(
+            "No entry contains: "
+            + ", ".join(results.absent_terms)
+            + " -- these were ignored when matching."
+        )
+
     return render(
-        [journal_entry_to_record(entry, show_date=True) for entry in entries],
+        records,
         tool="search_journal",
-        header=f'search_journal("{query}")',
+        header=f'search_journal("{results.query.raw}")',
         detail=detail,
         limit=limit,
         offset=offset,
-        query=query,
+        query_terms=results.query.terms,
+        order=results.order,
+        warnings=warnings,
     )
 
 

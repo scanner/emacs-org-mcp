@@ -27,13 +27,22 @@ from mcp_server.journal import (
     parse_journal_entries,
 )
 from mcp_server.projects import format_project_list, list_projects
-from mcp_server.tasks import format_task_list, list_tasks, search_tasks
-from mcp_server.tools import format_search_results
+from mcp_server.tasks import (
+    format_task_list,
+    format_task_search,
+    list_tasks,
+    search_tasks,
+)
 from tests.conftest import make_journal_file, make_task, make_tasks_org
 
 # Bodies are built from this so a formatter that emits them is unmistakable in
 # the failure, rather than showing up only as a line count that drifted.
 BODY_MARKER = "BODY_TEXT_THAT_MUST_NOT_APPEAR_IN_A_LISTING"
+
+# A word that lives only in record bodies, for querying by. Distinct from
+# BODY_MARKER because a search echoes its query in the header -- searching
+# for the marker itself would trip the marker check on the header line.
+BODY_TERM = "quernstone"
 
 RECORD_COUNT = 12
 BODY_LINES = 40
@@ -65,7 +74,10 @@ def big_body(n: int) -> str:
     text at all", which is what these tools actually guarantee.
     """
     preview = ["a first body line", "a second body line"]
-    rest = [f"{BODY_MARKER} line {i} of record {n}" for i in range(BODY_LINES)]
+    rest = [
+        f"{BODY_MARKER} {BODY_TERM} line {i} of record {n}"
+        for i in range(BODY_LINES)
+    ]
     return "\n".join(preview + rest)
 
 
@@ -149,12 +161,12 @@ class TestListingsAreBounded:
             RECORD_COUNT,
         )
 
-        matches = search_tasks(BODY_MARKER)
+        results = search_tasks(BODY_TERM)
         with check:
-            assert len(matches) == RECORD_COUNT, "fixture should match all"
+            assert len(results.hits) == RECORD_COUNT, "fixture should match all"
 
         check_bounded(
-            format_search_results(matches, "task"),
+            format_task_search(results, detail="index"),
             "search_tasks",
             RECORD_COUNT,
         )

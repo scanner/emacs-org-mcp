@@ -7,6 +7,7 @@ from pathlib import Path
 
 # 3rd party imports
 import pytest
+from pytest_check import check
 
 # project imports
 from mcp_server.projects import (
@@ -464,27 +465,33 @@ class TestSearchProjects:
         """
         GIVEN: projects with distinct titles and content
         WHEN:  search_projects is called
-        THEN:  the correct project is found (case-insensitive)
+        THEN:  the right project ranks first, whatever the case
+
+        Ranking may surface other projects that share a word, so this asserts
+        which one comes *first* rather than that nothing else matched.
         """
         results = search_projects(query)
-        assert len(results) == 1
-        assert results[0].slug == expected_slug
+
+        assert results.payloads[0].slug == expected_slug
 
     ####################################################################
     #
-    def test_search_no_results(
+    def test_a_search_for_something_absent_comes_back_empty(
         self, sample_project_files: ProjectFilesInfo
     ) -> None:
         """
-        GIVEN: a query matching no projects
-        WHEN:  search_projects is called
-        THEN:  an empty list is returned
+        GIVEN: a query naming something no project contains
+        WHEN:  it is searched for
+        THEN:  nothing is returned and the unknown term is reported
         """
-        assert search_projects("xyzzy-nonexistent") == []
+        results = search_projects("xyzzy-not-found-anywhere")
+
+        with check:
+            assert not results.hits
+        with check:
+            assert results.absent_terms == ["xyzzy-not-found-anywhere"]
 
 
-########################################################################
-#
 class TestRegenerateProjectIndex:
     """Tests for the project index auto-generation."""
 

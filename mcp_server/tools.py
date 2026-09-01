@@ -356,8 +356,9 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="search_tasks",
             description=(
-                "Search tasks by query string across all sections. Case-insensitive substring match on headline "
-                "and content. Returns one compact line per matching task: status, ticket ID and headline. Task "
+                "Search tasks across all sections, ranked by relevance. The query is matched as terms, not as a "
+                'literal string, and inflections are matched too. Use "double quotes" for an exact phrase. '
+                "Returns one compact line per matching task plus the lines that matched. Task "
                 "bodies are NOT included -- call get_task for full content. Also reports any tasks the org parser "
                 "cannot see. "
                 "Use this to check for existing tasks before creating new ones, or to find tasks related to a topic. "
@@ -371,6 +372,29 @@ async def handle_list_tools() -> list[Tool]:
                         "description": "Search query (matches headline and content)",
                     },
                     **envelope_properties("snippet"),
+                    "section": {
+                        "type": "string",
+                        "enum": [
+                            global_state.config.active_section,
+                            global_state.config.completed_section,
+                        ],
+                        "description": "Restrict to one section. Omit to search both.",
+                    },
+                    "headline_only": {
+                        "type": "boolean",
+                        "description": (
+                            "Match headlines only, so results are records *about* the subject rather "
+                            "than every record that mentions it in passing."
+                        ),
+                    },
+                    "order": {
+                        "type": "string",
+                        "enum": ["relevance", "recent", "oldest", "matches"],
+                        "description": (
+                            "Result ordering, default relevance. matches orders by how much of the "
+                            "query each record covered."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -550,10 +574,13 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="search_journal",
             description=(
-                "Search journal entries by query string across recent days. Case-insensitive substring match on "
-                "headline and body. Returns one compact line per matching entry -- time, headline, tags and date. "
-                "Entry bodies are NOT included; call get_journal_entry for full content. Results are not limited "
-                "yet, so a common word over a long window can return a line for every entry that contains it. "
+                "Search journal entries, ranked by relevance. The query is matched as terms, not as a literal "
+                "string, so a half-remembered phrase finds the entries it describes even when that exact wording "
+                'appears nowhere -- inflections are matched too (compaction finds compacted). Use "double quotes" '
+                "for an exact phrase. Returns one compact line per entry plus the lines that matched; bodies are "
+                "NOT included, so call get_journal_entry for a full entry. Terms no entry contains are reported "
+                "rather than silently ignored. Searches the last 30 days by default -- pass days_back=0 to search "
+                "everything, which is what you want when you half-remember something from months or years ago. "
                 "Use this to find past work on a topic, review recent activity, or look up when something was done. "
                 "Searches last 30 days by default. "
                 ""
@@ -567,7 +594,40 @@ async def handle_list_tools() -> list[Tool]:
                     },
                     "days_back": {
                         "type": "integer",
-                        "description": "Days to search back (default 30, searches from today backwards)",
+                        "description": (
+                            "Days to search back (default 30). Use 0 to search the whole journal, which is "
+                            "the right choice for recall across years."
+                        ),
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Earliest date to search, YYYY-MM-DD. Overrides days_back.",
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "Latest date to search, YYYY-MM-DD.",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Only entries carrying all of these tags, e.g. daily_summary or decision."
+                        ),
+                    },
+                    "headline_only": {
+                        "type": "boolean",
+                        "description": (
+                            "Match headlines only, so results are entries *about* the subject rather than "
+                            "every entry that mentions it in passing."
+                        ),
+                    },
+                    "order": {
+                        "type": "string",
+                        "enum": ["relevance", "recent", "oldest", "matches"],
+                        "description": (
+                            "Result ordering. Defaults to recent for a bounded window and relevance when "
+                            "searching everything. matches orders by how much of the query each entry covered."
+                        ),
                     },
                     **envelope_properties("snippet"),
                 },
@@ -717,7 +777,7 @@ async def handle_list_tools() -> list[Tool]:
             name="search_projects",
             description=(
                 "Search across all projects by query string. Case-insensitive substring match "
-                "on project titles and all section content. Returns one compact line per matching project: "
+                "on titles and section content, ranked by relevance and matched as terms. Returns one compact line per matching project: "
                 "status, title and slug. Project content is NOT included -- call get_project for a project's "
                 "full content."
             ),
@@ -729,6 +789,21 @@ async def handle_list_tools() -> list[Tool]:
                         "description": "Search query (matches titles and content)",
                     },
                     **envelope_properties("snippet"),
+                    "headline_only": {
+                        "type": "boolean",
+                        "description": (
+                            "Match headlines only, so results are records *about* the subject rather "
+                            "than every record that mentions it in passing."
+                        ),
+                    },
+                    "order": {
+                        "type": "string",
+                        "enum": ["relevance", "recent", "oldest", "matches"],
+                        "description": (
+                            "Result ordering, default relevance. matches orders by how much of the "
+                            "query each record covered."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -892,10 +967,14 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return [TextContent(type="text", text=output)]
 
             case "search_tasks":
-                tasks = search_tasks(arguments["query"])
-                output = format_task_search(
-                    tasks,
+                results = search_tasks(
                     arguments["query"],
+                    section=arguments.get("section"),
+                    headline_only=arguments.get("headline_only", False),
+                    order=arguments.get("order", "relevance"),
+                )
+                output = format_task_search(
+                    results,
                     detail=arguments.get("detail", "snippet"),
                     limit=arguments.get("limit"),
                     offset=arguments.get("offset", 0),
@@ -968,13 +1047,17 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return [TextContent(type="text", text=output)]
 
             case "search_journal":
-                entries = search_journal(
+                results = search_journal(
                     arguments["query"],
-                    arguments.get("days_back", 30),
+                    days_back=arguments.get("days_back", 30),
+                    since=arguments.get("since", ""),
+                    until=arguments.get("until", ""),
+                    tags=arguments.get("tags"),
+                    headline_only=arguments.get("headline_only", False),
+                    order=arguments.get("order", ""),
                 )
                 output = format_journal_search(
-                    entries,
-                    arguments["query"],
+                    results,
                     detail=arguments.get("detail", "snippet"),
                     limit=arguments.get("limit"),
                     offset=arguments.get("offset", 0),
@@ -1039,10 +1122,14 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return [TextContent(type="text", text=output)]
 
             case "search_projects":
-                projects = search_projects(arguments["query"])
-                output = format_project_search(
-                    projects,
+                results = search_projects(
                     arguments["query"],
+                    status=arguments.get("status"),
+                    headline_only=arguments.get("headline_only", False),
+                    order=arguments.get("order", "relevance"),
+                )
+                output = format_project_search(
+                    results,
                     detail=arguments.get("detail", "snippet"),
                     limit=arguments.get("limit"),
                     offset=arguments.get("offset", 0),
