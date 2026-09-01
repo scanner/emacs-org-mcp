@@ -150,9 +150,7 @@ def thread(faker) -> list[SearchDoc]:
 ########################################################################
 #
 @pytest.fixture
-def corpus(
-    thread: list[SearchDoc], noise: list[SearchDoc]
-) -> list[SearchDoc]:
+def corpus(thread: list[SearchDoc], noise: list[SearchDoc]) -> list[SearchDoc]:
     """The thread and its decoy, buried in filler."""
     return thread + noise
 

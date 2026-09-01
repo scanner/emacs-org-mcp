@@ -1726,7 +1726,7 @@ def format_task_search(
         detail=detail,
         limit=limit,
         offset=offset,
-        query=query,
+        query_terms=[query],
         warnings=task_warnings(),
     )
 
