@@ -32,8 +32,15 @@ class Config:
     """Configuration for the MCP server."""
 
     org_dir: Path = Path.home() / "org"
-    journal_dir: Path = Path.home() / "org" / "journal"
-    projects_dir: Path = Path.home() / "org" / "projects"
+
+    # Left unset so that __post_init__ can tell "not given" from "given", and
+    # derive these from org_dir. They are typed Path because that is what they
+    # always are once construction finishes, and because load_config reads the
+    # declared type to convert environment variables -- widening it to
+    # Path | None would stop JOURNAL_DIR and PROJECTS_DIR being converted at
+    # all.
+    journal_dir: Path = None  # type: ignore[assignment]
+    projects_dir: Path = None  # type: ignore[assignment]
     emacsclient_path: Path = Path("/usr/local/bin/emacsclient")
     ediff_approval: bool = True
     git_autocommit: bool = True
@@ -41,6 +48,29 @@ class Config:
     completed_section: str = "Completed Tasks"
     high_level_section: str = "High Level Tasks (in order)"
 
+    ###########################################################################
+    #
+    def __post_init__(self) -> None:
+        """
+        Derive the subdirectories from org_dir unless they were given.
+
+        Note:
+            This has to live here rather than in a loader. A Config built
+            directly -- by a test, a script, or any tooling -- otherwise keeps
+            the *default* journal and projects directories while taking its
+            tasks file from the org_dir it was given, so it reads tasks from
+            one place and writes projects to the user's real org directory.
+            That is not hypothetical: it happened, and it wrote to live data.
+
+            Only tasks_file was safe before, because it alone was derived.
+        """
+        if self.journal_dir is None:
+            self.journal_dir = self.org_dir / "journal"
+        if self.projects_dir is None:
+            self.projects_dir = self.org_dir / "projects"
+
+    ###########################################################################
+    #
     @property
     def tasks_file(self) -> Path:
         """Return the path to the tasks.org file."""
@@ -155,17 +185,9 @@ def load_config(args: dict[str, str | bool | None]) -> Config:
                     config_map[config_field] = cli_value
 
     # Create Config instance with overrides
-    config = Config(**config_map)
-
-    # If org_dir was customized, default subdirectories that weren't
-    # explicitly set.
-    if "org_dir" in config_map:
-        if "journal_dir" not in config_map:
-            config.journal_dir = config.org_dir / "journal"
-        if "projects_dir" not in config_map:
-            config.projects_dir = config.org_dir / "projects"
-
-    return config
+    # Config derives journal_dir and projects_dir from org_dir itself, so
+    # anything not named here follows the org_dir given.
+    return Config(**config_map)
 
 
 # Global state - config will be updated in __main__ after parsing args
