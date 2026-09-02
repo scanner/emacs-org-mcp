@@ -63,8 +63,8 @@ syntax inside a block and the server comma-escapes it for you:
 - `:CUSTOM_ID:` — Required. Use `task-<ticket-id>` format (e.g., `task-gh-123`)
 - `:ID:` — Auto-generated UUID if omitted
 - `:CREATED:`, `:MODIFIED:`, `:CLOSED:` — Auto-managed timestamps
-- `:PROJECT:` — Required when the task belongs to a project. Value is the
-  project's `:CUSTOM_ID:` (e.g., `project-booklore`). See "Linking Tasks to
+- `:PROJECT:` — The project's `:CUSTOM_ID:` (e.g., `project-booklore`).
+  Written by `link_task_to_project`, not by hand. See "Linking Tasks to
   Projects" below.
 
 ## Finding Tasks
@@ -91,32 +91,39 @@ The `update_task` tool takes an `identifier` (to find the task) and a
 
 ## Linking Tasks to Projects
 
-**Required step when creating or updating a task.** Linking is two-sided and
-the two sides are separate calls:
+**Required step when creating or updating a task.** Linking is one call:
 
 1. `list_projects` (or `search_projects`) to find a matching project.
-2. If one matches, set `:PROJECT: project-<slug>` in the task's PROPERTIES
-   drawer — this is the task → project half.
-3. Call `link_task_to_project` to add the link to the project's
-   `Related Tasks` section — this is the project → task half.
+2. If one matches, call `link_task_to_project` with the task and the project.
 
-`link_task_to_project` only writes the project file. It does **not** set
-`:PROJECT:` on the task; do that yourself in the same `task_entry`.
-
-```org
-** TODO GH-28 Implement chunking
-:PROPERTIES:
-   :CUSTOM_ID: task-gh-28
-   :PROJECT:  project-booklore
-:END:
-```
+That maintains both ends — the task's `:PROJECT:` property and the project's
+`Related Tasks` section. Do **not** set `:PROJECT:` by hand in `task_entry`:
+the tool owns that field, which is what keeps its value in one shape.
 
 ```json
-{"project_identifier": "booklore",
- "task_link": "- [[file:~/org/tasks.org::#task-gh-28][GH-28 Implement chunking]]"}
+{"task_identifier": "task-gh-28", "project_identifier": "booklore"}
 ```
 
-If no project matches, skip both steps — do not invent a project.
+The result reports what happened at each end:
+
+```
+✓ Linked task-gh-28 and booklore
+    task end:    task :PROJECT: set
+    project end: added to the project's Related Tasks
+```
+
+It is idempotent, so it is safe to call again — linking something already
+linked writes nothing. Use `unlink_task_from_project` to undo it, which also
+clears both ends.
+
+Neither asks for approval. A link is mechanical: once you have decided the two
+are related there is nothing to review.
+
+A task may belong to one project. Linking a task that is already linked
+elsewhere is refused — unlink it first, so the other project's `Related Tasks`
+does not keep pointing at it.
+
+If no project matches, do not link — and do not invent a project.
 
 ## Automatic Behaviors
 
