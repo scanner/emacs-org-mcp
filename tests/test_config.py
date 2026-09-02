@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import pytest
+from pytest_check import check
 from pytest_mock import MockerFixture
 
 from mcp_server.config import Config, load_config
@@ -332,3 +333,129 @@ class TestLoadConfig:
             f"env={env_value}, cli_arg={cli_arg}, cli_value={cli_value}, "
             f"expected={expected}, got={config.ediff_approval}"
         )
+
+
+########################################################################
+########################################################################
+#
+class TestPathsFollowOrgDir:
+    """
+    Tests that every org path a Config exposes lives under its org_dir.
+
+    This was not true. journal_dir and projects_dir had their own defaults
+    pointing at the real org directory, and only load_config repaired them --
+    so a Config built directly, by a test or a script, read its tasks from the
+    directory it was given and wrote projects to the user's live files. It did
+    exactly that once.
+    """
+
+    ####################################################################
+    #
+    def test_every_path_follows_a_custom_org_dir(self, tmp_path: Path):
+        """
+        GIVEN: a Config given only an org_dir
+        WHEN:  its paths are read
+        THEN:  all of them are under that org_dir
+
+        The guarantee is stated as containment rather than as three equality
+        checks, because what matters is that nothing escapes to the real org
+        directory -- which is the failure this had.
+        """
+        config = Config(org_dir=tmp_path)
+
+        for name in ("journal_dir", "projects_dir", "tasks_file"):
+            path = getattr(config, name)
+            with check:
+                assert tmp_path in path.parents or path.parent == tmp_path, (
+                    f"{name} is {path}, outside the given org_dir"
+                )
+
+    ####################################################################
+    #
+    @pytest.mark.parametrize(
+        "overrides, expected",
+        [
+            pytest.param(
+                {},
+                {"journal_dir": "journal", "projects_dir": "projects"},
+                id="both-derived",
+            ),
+            pytest.param(
+                {"journal_dir": "elsewhere/j"},
+                {"journal_dir": "elsewhere/j", "projects_dir": "projects"},
+                id="explicit-journal-wins",
+            ),
+            pytest.param(
+                {"projects_dir": "elsewhere/p"},
+                {"journal_dir": "journal", "projects_dir": "elsewhere/p"},
+                id="explicit-projects-wins",
+            ),
+        ],
+    )
+    def test_an_explicit_subdirectory_is_not_overridden(
+        self, tmp_path: Path, overrides, expected
+    ):
+        """
+        GIVEN: a Config given an org_dir, and possibly an explicit
+               subdirectory
+        WHEN:  its paths are read
+        THEN:  the explicit one is kept and the other is derived
+
+        Deriving must not mean overwriting: a caller that names a directory
+        has said where it wants it.
+        """
+        config = Config(
+            org_dir=tmp_path,
+            **{name: tmp_path / rel for name, rel in overrides.items()},
+        )
+
+        for name, rel in expected.items():
+            with check:
+                assert getattr(config, name) == tmp_path / rel
+
+    ####################################################################
+    #
+    def test_the_default_config_still_points_at_the_org_directory(self):
+        """
+        GIVEN: a Config with nothing given
+        WHEN:  its paths are read
+        THEN:  they are the usual ones under the home org directory
+
+        Deriving the subdirectories must not move them for the ordinary case.
+        """
+        config = Config()
+
+        with check:
+            assert config.journal_dir == Path.home() / "org" / "journal"
+        with check:
+            assert config.projects_dir == Path.home() / "org" / "projects"
+
+    ####################################################################
+    #
+    def test_load_config_still_honours_explicit_directories(
+        self, tmp_path: Path, mocker: MockerFixture
+    ):
+        """
+        GIVEN: ORG_DIR and an explicit PROJECTS_DIR in the environment
+        WHEN:  configuration is loaded
+        THEN:  the explicit projects directory is kept and the journal
+               directory is derived
+
+        load_config used to perform this derivation itself. Moving it into
+        Config must leave the loader's behaviour unchanged.
+        """
+        mocker.patch.dict(
+            os.environ,
+            {
+                "ORG_DIR": str(tmp_path),
+                "PROJECTS_DIR": str(tmp_path / "custom"),
+            },
+            clear=False,
+        )
+
+        config = load_config({})
+
+        with check:
+            assert config.projects_dir == tmp_path / "custom"
+        with check:
+            assert config.journal_dir == tmp_path / "journal"

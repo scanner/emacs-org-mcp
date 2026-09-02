@@ -289,18 +289,16 @@ def temp_org_dir(
 
     Yields the tmp_path for further customization in tests.
     """
-    # Create directory structure
-    journal_dir = tmp_path / "journal"
-    journal_dir.mkdir()
-    projects_dir = tmp_path / "projects"
-    projects_dir.mkdir()
+    (tmp_path / "journal").mkdir()
+    (tmp_path / "projects").mkdir()
 
-    # Configure server to use this temp directory (ediff disabled for tests)
+    # Only org_dir is given. The subdirectories are deliberately left for
+    # Config to derive, so that every test using this fixture would write to
+    # the real org directory if that derivation ever broke again -- which
+    # turns the whole suite into the regression net for it.
     config_factory(
         Config(
             org_dir=tmp_path,
-            journal_dir=journal_dir,
-            projects_dir=projects_dir,
             ediff_approval=False,
             git_autocommit=False,
         )

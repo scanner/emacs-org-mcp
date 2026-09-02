@@ -369,6 +369,23 @@ The project index is a derived artifact rebuilt from a directory scan. It is
 refreshed after a link and a failure there is logged, not raised — a healthy
 link must not report as broken because a derived file could not be rebuilt.
 
+### Every Org Path Follows `org_dir` (`mcp_server/config.py`)
+
+`journal_dir` and `projects_dir` are derived from `org_dir` in
+`Config.__post_init__`, not by whoever builds the Config.
+
+They used to carry their own defaults pointing at the real org directory, with
+only `load_config` repairing them. That made the server correct and every
+*direct* construction wrong: a `Config(org_dir=<temp>)` read its tasks from the
+temp directory — `tasks_file` was the one derived path — while writing projects
+and journal entries to the user's live files. It is not a hypothetical; it
+wrote 11 links into a real project file.
+
+`tests/conftest.py` deliberately passes **only** `org_dir`. It used to name all
+three, which is what kept 300+ tests from noticing. Leaving the subdirectories
+to be derived means any regression writes to the real org directory during a
+test run, so the whole suite guards this rather than one test.
+
 ### Git Versioning (`mcp_server/versioning.py`)
 
 Every org write is committed to that file's own git repository, so history is a
@@ -445,7 +462,7 @@ All settings can be overridden via environment variables or command-line flags:
 
 | Variable/Flag | Default | Description |
 |----------|---------|-------------|
-| `ORG_DIR` / `--org-dir` | `~/org` | Base org directory |
+| `ORG_DIR` / `--org-dir` | `~/org` | Base org directory. The journal and projects directories derive from it unless set explicitly |
 | `JOURNAL_DIR` / `--journal-dir` | `$ORG_DIR/journal` | Journal files directory |
 | `PROJECTS_DIR` / `--projects-dir` | `$ORG_DIR/projects` | Project files directory |
 | `ACTIVE_SECTION` / `--active-section` | `Tasks` | Section name for active/TODO tasks |
