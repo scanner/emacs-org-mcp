@@ -128,9 +128,7 @@ class LinkResult:
     @property
     def changed(self) -> bool:
         """Report whether either end was written."""
-        return (
-            self.task_end != "unchanged" or self.project_end != "unchanged"
-        )
+        return self.task_end != "unchanged" or self.project_end != "unchanged"
 
 
 ###############################################################################

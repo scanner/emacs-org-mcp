@@ -32,9 +32,7 @@ from tests.conftest import make_project, make_task, make_tasks_org
 def task_and_project(temp_org_dir: Path) -> Path:
     """One task and one project, not yet linked."""
     (temp_org_dir / "tasks.org").write_text(
-        make_tasks_org(
-            [make_task("GH-48 Build the widget", "task-gh-48")], []
-        )
+        make_tasks_org([make_task("GH-48 Build the widget", "task-gh-48")], [])
     )
     (temp_org_dir / "projects" / "widgets.org").write_text(
         make_project(title="Widgets", slug="widgets")
