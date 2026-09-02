@@ -105,13 +105,12 @@ Not all sections are required. Use only what is relevant to the project. Additio
 
 Projects, tasks, and journal entries link to each other:
 
-Linking is **two-sided and takes two calls**. Doing only one leaves the pair
-half-linked.
+Linking a task and a project is **one call**, which maintains both ends.
 
-### Tasks to Projects
+### Tasks and Projects
 
-Set `:PROJECT:` to the project's `:CUSTOM_ID:` in the task's drawer, via
-`create_task` / `update_task`:
+`link_task_to_project` sets the task's `:PROJECT:` to the project's
+`:CUSTOM_ID:` and adds the task to the project's `Related Tasks`:
 
 ```org
 ** TODO GH-28 Implement feature
@@ -121,25 +120,30 @@ Set `:PROJECT:` to the project's `:CUSTOM_ID:` in the task's drawer, via
 :END:
 ```
 
-### Projects to Tasks
-
-Use `link_task_to_project`, which appends to the project's `Related Tasks`
-section:
-
 ```org
 ** Related Tasks
 - [[file:~/org/tasks.org::#task-gh-28][GH-28 Implement feature]]
 ```
 
-This tool writes **only** the project file — it does not set `:PROJECT:` on
-the task.
+The link targets the task's `:CUSTOM_ID:` anchor, which is what makes it both
+clickable in Emacs and findable by `search_tasks` — the anchor is a search
+term, and the description stays readable.
+
+Do **not** write either end by hand. The tool owns both, which is what keeps
+`:PROJECT:` in one shape across every file.
+
+`unlink_task_from_project` removes both ends. Both are idempotent and neither
+asks for approval: a link is mechanical, so there is nothing to review.
+
+A task may belong to one project. Linking a task already linked elsewhere is
+refused rather than silently repointed.
 
 ### Required Workflow
 
 - **Creating or updating a project**: `search_tasks` for tasks that belong to
-  it, then link both sides for each match.
+  it, then `link_task_to_project` for each match.
 - **Creating or updating a task**: `list_projects` for a matching project,
-  then link both sides. If none matches, skip — do not invent a project.
+  then `link_task_to_project`. If none matches, do not link.
 
 ### Journal Entries for Projects
 

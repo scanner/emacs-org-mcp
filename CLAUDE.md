@@ -335,6 +335,40 @@ expensive. `tests/test_read_surface.py` pins the *claim* — records carry long
 bodies and each listing must stay inside a per-record line budget — because
 asserting on wording is keyword whack-a-mole.
 
+### Linking Is Mechanical (`mcp_server/linking.py`)
+
+A link carries no judgement. Once someone has decided a task belongs to a
+project, the link is one known-shaped line in a known section and one property
+in a drawer — so there is **no ediff approval**. That is the rule generally:
+approval is for content a person might want to edit before it lands, not for
+structural changes they have already asked for. `reorder_task` skips it for the
+same reason.
+
+**Both ends, in one call.** The task carries `:PROJECT:` and the project lists
+the task. Leaving either to the caller is how they drift, which the live data
+showed: `:PROJECT:` held two different spellings because nothing owned the
+field.
+
+**Not atomic, and idempotent instead.** Two files means a failure between
+writes leaves one end done. Both ends are validated and both contents computed
+before anything is written, but the real guarantee is that re-running completes
+whichever end is missing — better than a claim of atomicity that cannot hold
+across two files.
+
+**Idempotency is judged on the link, not the text.** The project end matches
+the `#task-id` anchor, not the rendered line, because a headline changes over a
+task's life and a text comparison would append a second link after any rename.
+The task end accepts any `:PROJECT:` resolving to the same project and rewrites
+it to canonical form, so an unsanctioned value is repaired by ordinary use.
+
+A task belongs to one project: linking one already linked elsewhere is refused
+rather than silently repointed, which would leave the first project pointing at
+a task that no longer claims it.
+
+The project index is a derived artifact rebuilt from a directory scan. It is
+refreshed after a link and a failure there is logged, not raised — a healthy
+link must not report as broken because a derived file could not be rebuilt.
+
 ### Git Versioning (`mcp_server/versioning.py`)
 
 Every org write is committed to that file's own git repository, so history is a
@@ -546,7 +580,8 @@ Key elements:
 | `create_project` | Create new project file from org-formatted string |
 | `update_project` | Update project section, properties, headline, or tags |
 | `search_projects` | Search across all projects |
-| `link_task_to_project` | Add a task link to a project's Related Tasks section |
+| `link_task_to_project` | Link a task and a project, both ends, no ediff |
+| `unlink_task_from_project` | Remove the link, both ends |
 
 ## Code Style
 

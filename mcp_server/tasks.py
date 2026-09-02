@@ -39,8 +39,11 @@ from mcp_server.validation import (
 # Constants
 # =============================================================================
 
-# These are the properties we care about on a task in tasks.org
-PROPERTIES = ("CUSTOM_ID", "ID", "CREATED", "MODIFIED", "CLOSED")
+# These are the properties we care about on a task in tasks.org. PROJECT is
+# among them because a shared format is the point: another tool reading these
+# files has to find the same field in the same shape, and a property nothing
+# owns is one that drifts.
+PROPERTIES = ("CUSTOM_ID", "ID", "CREATED", "MODIFIED", "CLOSED", "PROJECT")
 
 # A trailing progress cookie on a section heading, e.g. the "[1/2]" in
 # "* High Level Tasks (in order) [1/2]".  Stripped when comparing sections
@@ -82,6 +85,7 @@ class Task:
         ""  # The :MODIFIED: timestamp (inactive, updated on modification)
     )
     closed: str = ""  # The :CLOSED: timestamp (active, set when marked DONE)
+    project: str = ""  # The :PROJECT: this task belongs to, as its CUSTOM_ID
 
     ###########################################################################
     #
@@ -572,12 +576,14 @@ def parse_tasks_in_section(
         created = ""
         modified = ""
         closed = ""
+        project = ""
         if hasattr(heading, "properties") and heading.properties:
             custom_id = heading.properties.get("CUSTOM_ID", "")
             task_id = heading.properties.get("ID", "")
             created = heading.properties.get("CREATED", "")
             modified = heading.properties.get("MODIFIED", "")
             closed = heading.properties.get("CLOSED", "")
+            project = heading.properties.get("PROJECT", "")
 
         headline_text = (
             heading.headline.title
@@ -596,6 +602,7 @@ def parse_tasks_in_section(
                 created=created,
                 modified=modified,
                 closed=closed,
+                project=project,
             )
         )
 
@@ -679,6 +686,7 @@ def find_task(
                     created=properties.CREATED,
                     modified=properties.MODIFIED,
                     closed=properties.CLOSED,
+                    project=properties.PROJECT or "",
                 )
                 result = (task, heading, section_heading, org)
                 return result

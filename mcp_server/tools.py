@@ -25,6 +25,11 @@ from mcp_server.journal import (
     search_journal,
     update_journal_entry,
 )
+from mcp_server.linking import (
+    format_link_result,
+    link_task_to_project,
+    unlink_task_from_project,
+)
 from mcp_server.projects import (
     VALID_PROJECT_STATUSES,
     create_project,
@@ -34,7 +39,6 @@ from mcp_server.projects import (
     format_project_search,
     format_project_update_result,
     get_project,
-    link_task_to_project,
     list_projects,
     regenerate_project_index,
     search_projects,
@@ -811,24 +815,49 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="link_task_to_project",
             description=(
-                "Add a task link to a project's Related Tasks section. The task_link should be "
-                "an org-mode link like '- [[file:~/org/tasks.org::#task-gh-28][GH-28 Task name]]'. "
-                "This writes only the project file: also set :PROJECT: on the task via update_task "
-                "to complete the link."
+                "Link a task and a project, maintaining both ends in one call: the task's :PROJECT: "
+                "property and the project's Related Tasks section. Name the two; nothing else is "
+                "needed and no approval is asked for, because a link is mechanical. Idempotent -- "
+                "linking something already linked reports that and writes nothing, so it is safe to "
+                "retry. A :PROJECT: value naming this project in another form is rewritten to the "
+                "canonical CUSTOM_ID."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "task_identifier": {
+                        "type": "string",
+                        "description": "Task CUSTOM_ID, ticket ID, or headline substring",
+                    },
                     "project_identifier": {
                         "type": "string",
                         "description": "Project slug, CUSTOM_ID, or title substring",
                     },
-                    "task_link": {
+                },
+                "required": ["task_identifier", "project_identifier"],
+            },
+        ),
+        Tool(
+            name="unlink_task_from_project",
+            description=(
+                "Remove the link between a task and a project, at both ends: clears the task's "
+                ":PROJECT: property and removes the task from the project's Related Tasks. "
+                "Idempotent, and asks for no approval, for the same reasons as linking. The "
+                ":PROJECT: property is only cleared if it actually names this project."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_identifier": {
                         "type": "string",
-                        "description": "Org-mode link string for the task",
+                        "description": "Task CUSTOM_ID, ticket ID, or headline substring",
+                    },
+                    "project_identifier": {
+                        "type": "string",
+                        "description": "Project slug, CUSTOM_ID, or title substring",
                     },
                 },
-                "required": ["project_identifier", "task_link"],
+                "required": ["task_identifier", "project_identifier"],
             },
         ),
         Tool(
@@ -1137,16 +1166,24 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return [TextContent(type="text", text=output)]
 
             case "link_task_to_project":
-                new_content = link_task_to_project(
-                    arguments["project_identifier"],
-                    arguments["task_link"],
+                output = format_link_result(
+                    link_task_to_project(
+                        arguments["task_identifier"],
+                        arguments["project_identifier"],
+                    ),
+                    "Linked",
                 )
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Task linked to project successfully.\n\n{new_content}",
-                    )
-                ]
+                return [TextContent(type="text", text=output)]
+
+            case "unlink_task_from_project":
+                output = format_link_result(
+                    unlink_task_from_project(
+                        arguments["task_identifier"],
+                        arguments["project_identifier"],
+                    ),
+                    "Unlinked",
+                )
+                return [TextContent(type="text", text=output)]
 
             case "regenerate_project_index":
                 regenerate_project_index()
