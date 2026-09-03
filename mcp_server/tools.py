@@ -50,6 +50,7 @@ from mcp_server.tasks import (
     create_task,
     find_task,
     format_move_result,
+    format_org_stats,
     format_task_create_result,
     format_task_detail,
     format_task_list,
@@ -57,6 +58,7 @@ from mcp_server.tasks import (
     format_task_update_result,
     list_tasks,
     move_task,
+    org_stats,
     reorder_task,
     resort_completed_tasks,
     search_tasks,
@@ -137,9 +139,11 @@ def envelope_properties(default_detail: str) -> dict:
             "description": (
                 f"How much of each record to return (default {default_detail}). "
                 "index: one line per record. snippet: that line plus the "
-                "matching lines, so you can see why it matched. full: the "
-                "whole record. snippet falls back to index when there is no "
-                "query to match against."
+                "matching lines, so you can see why it matched. items: that "
+                "line plus the record's progress cookie and checkboxes, for "
+                "seeing what is finished without reading it. full: the whole "
+                "record. snippet falls back to index when there is no query "
+                "to match against."
             ),
         },
         "limit": {
@@ -195,6 +199,47 @@ def position_properties() -> dict:
     }
 
 
+###############################################################################
+#
+def filter_properties() -> dict:
+    """
+    Return the schema entries for the task readers' where and show inputs.
+
+    Returns:
+        JSON-schema properties to merge into a tool's inputSchema. Note that
+        "properties" here is the JSON-schema sense, not an org drawer's.
+
+    Note:
+        One general mechanism rather than a parameter per field. Any drawer
+        property is filterable, including ones this server has never heard
+        of, so "can I also filter by X" is answered without another round
+        of tool design.
+    """
+    return {
+        "where": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+            "description": (
+                "Filter by field, as {FIELD: value}, ANDed. Any drawer property works "
+                "(PROJECT, CUSTOM_ID, or one your own files define), plus the pseudo-fields "
+                "status and section. "
+                "Matching is case-insensitive and exact, not substring -- use the query for "
+                "substring. PROJECT matches whichever way it is spelled, slug or project-slug. "
+                "A task lacking the field does not match, so filtering on a property "
+                "returns only the tasks that carry it."
+            ),
+        },
+        "show": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                'Property names to append to each result line, e.g. ["PROJECT"]. '
+                "A task not carrying one is shown without it."
+            ),
+        },
+    }
+
+
 # =============================================================================
 # MCP Tool Definitions
 # =============================================================================
@@ -210,8 +255,10 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="list_tasks",
             description=(
-                "List all tasks in a section of tasks.org. Returns one compact line per task: status, ticket ID, "
-                "headline and CUSTOM_ID. Task bodies are NOT included -- call get_task for a task's full content. "
+                "List tasks in a section of tasks.org. Returns one compact line per task: status, ticket ID, "
+                "headline and CUSTOM_ID. Narrow with where={FIELD: value} -- any drawer property, "
+                "PROJECT included -- and add a property to each line with show=[...]. Task bodies are NOT "
+                "included; use detail=items for just the checklists, or get_task for one task in full. "
                 "Also reports any tasks present in the file that the org parser cannot see. "
                 "Use this to check for existing tasks before creating new ones, or to get an overview of work in progress. "
                 "For detailed format specifications, read the emacs-org://guide/task-format resource."
@@ -228,6 +275,7 @@ async def handle_list_tools() -> list[Tool]:
                         ],
                     },
                     **envelope_properties("index"),
+                    **filter_properties(),
                 },
                 "required": ["section"],
             },
@@ -365,8 +413,10 @@ async def handle_list_tools() -> list[Tool]:
                 "Returns one compact line per matching task plus the lines that matched. Task "
                 "bodies are NOT included -- call get_task for full content. Also reports any tasks the org parser "
                 "cannot see. "
-                "Use this to check for existing tasks before creating new ones, or to find tasks related to a topic. "
-                ""
+                "Narrow with where={FIELD: value}, which is applied before ranking so relevance is scored over "
+                "the tasks you asked about. When you know a field's exact value and are not looking for text, "
+                "list_tasks with the same where is cheaper. "
+                "Use this to check for existing tasks before creating new ones, or to find tasks related to a topic."
             ),
             inputSchema={
                 "type": "object",
@@ -399,6 +449,7 @@ async def handle_list_tools() -> list[Tool]:
                             "query each record covered."
                         ),
                     },
+                    **filter_properties(),
                 },
                 "required": ["query"],
             },
@@ -432,6 +483,16 @@ async def handle_list_tools() -> list[Tool]:
                 "This is NOT automatic and is not needed routinely -- new completions already go to the "
                 "top. Run it only when asked to, typically once to close the seam left by completions "
                 "that predate that behaviour. It overwrites any other ordering the section may have."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="org_stats",
+            description=(
+                "Counts, not records: how many tasks per section and per project, checklist item "
+                "totals, and any tasks the parser cannot see. Returns about ten lines however large "
+                "the files are. Reach for this whenever the answer you want is a number -- the shape "
+                "of the files, or a before-and-after comparison across a bulk change."
             ),
             inputSchema={"type": "object", "properties": {}},
         ),
@@ -895,11 +956,16 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         match name:
             # ----- Task Operations -----
+            case "org_stats":
+                output = format_org_stats(org_stats())
+                return [TextContent(type="text", text=output)]
+
             case "list_tasks":
-                tasks = list_tasks(arguments["section"])
+                tasks = list_tasks(arguments["section"], arguments.get("where"))
                 output = format_task_list(
                     tasks,
                     arguments["section"],
+                    show=arguments.get("show"),
                     detail=arguments.get("detail", "index"),
                     limit=arguments.get("limit"),
                     offset=arguments.get("offset", 0),
@@ -1001,9 +1067,11 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     section=arguments.get("section"),
                     headline_only=arguments.get("headline_only", False),
                     order=arguments.get("order", "relevance"),
+                    where=arguments.get("where"),
                 )
                 output = format_task_search(
                     results,
+                    show=arguments.get("show"),
                     detail=arguments.get("detail", "snippet"),
                     limit=arguments.get("limit"),
                     offset=arguments.get("offset", 0),
