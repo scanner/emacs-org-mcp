@@ -41,6 +41,12 @@ class Config:
     # all.
     journal_dir: Path = None  # type: ignore[assignment]
     projects_dir: Path = None  # type: ignore[assignment]
+
+    # Directories walked for loose org files. Left unset for the same reason
+    # as the two above, and it matters more here: a default naming the real
+    # org directory would make every Config built for a temp directory read
+    # the user's own files.
+    search_roots: list[Path] = None  # type: ignore[assignment]
     emacsclient_path: Path = Path("/usr/local/bin/emacsclient")
     ediff_approval: bool = True
     git_autocommit: bool = True
@@ -68,6 +74,8 @@ class Config:
             self.journal_dir = self.org_dir / "journal"
         if self.projects_dir is None:
             self.projects_dir = self.org_dir / "projects"
+        if self.search_roots is None:
+            self.search_roots = [self.org_dir]
 
     ###########################################################################
     #
@@ -122,6 +130,32 @@ CLI_ARG_TO_CONFIG = {
 
 ###############################################################################
 #
+def parse_search_roots(value: str) -> list[Path]:
+    """
+    Read search roots from a path-separated environment variable.
+
+    Args:
+        value: Directories joined by the platform's path separator, as
+            `SEARCH_ROOTS` gives them
+
+    Returns:
+        The directories, with `~` expanded. Empty when nothing was set,
+        which leaves Config to derive the default from org_dir.
+
+    Note:
+        Separated by `os.pathsep` rather than a comma, so this behaves like
+        PATH on the platform it runs on. A comma is a legal character in a
+        directory name and a colon is not, on the systems this runs on.
+    """
+    return [
+        Path(part).expanduser()
+        for part in value.split(os.pathsep)
+        if part.strip()
+    ]
+
+
+###############################################################################
+#
 def load_config(args: dict[str, str | bool | None]) -> Config:
     """
     Load configuration from CLI arguments and environment variables.
@@ -138,6 +172,18 @@ def load_config(args: dict[str, str | bool | None]) -> Config:
         Configured Config instance
     """
     config_map: dict[str, Any] = {}
+
+    # search_roots is the one list-valued setting, so it is read here rather
+    # than taught to the type-matching below. The CLI flag is repeatable and
+    # wins outright over the environment variable rather than extending it,
+    # which is how every other setting behaves.
+    #
+    roots = parse_search_roots(os.environ.get("SEARCH_ROOTS", ""))
+    cli_roots: Any = args.get("--search-root") or []
+    if isinstance(cli_roots, list) and cli_roots:
+        roots = [Path(str(root)).expanduser() for root in cli_roots]
+    if roots:
+        config_map["search_roots"] = roots
 
     # Load from environment variables
     #

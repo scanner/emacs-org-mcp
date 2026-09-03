@@ -25,6 +25,7 @@ callers can paste org samples into blocks without corrupting the file.
 
 # system imports
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 # =============================================================================
@@ -79,6 +80,48 @@ class OrgHeading:
 
 ###############################################################################
 #
+def scan_block_state(lines: Iterable[str]) -> Iterator[tuple[int, str, bool]]:
+    """
+    Walk lines, saying which of them sit inside a block.
+
+    Args:
+        lines: The lines of an org document, without line endings
+
+    Yields:
+        `(line_number, line, inside)` for every line, numbered from 1.
+        `inside` is True only for the lines *between* a `#+begin_...` and
+        its matching `#+end_...`; the delimiters themselves are outside,
+        which is what lets an escaping caller leave them alone.
+
+    Note:
+        A block ends only on the delimiter that matches the one that opened
+        it, so a nested `#+begin_src` inside an example block is ordinary
+        content rather than a second block.
+
+        Anything scanning org line by line needs this, and each caller
+        rewriting the state machine is how they drift apart -- one of them
+        would eventually decide a heading inside a block was real.
+    """
+    open_block: str | None = None
+
+    for idx, line in enumerate(lines, start=1):
+        if open_block is None:
+            if begin := BLOCK_BEGIN_RE.match(line):
+                open_block = begin.group(1).lower()
+            yield (idx, line, False)
+            continue
+
+        end = BLOCK_END_RE.match(line)
+        if end and end.group(1).lower() == open_block:
+            open_block = None
+            yield (idx, line, False)
+            continue
+
+        yield (idx, line, True)
+
+
+###############################################################################
+#
 def scan_headings(content: str) -> list[OrgHeading]:
     """
     Find every real org heading in ``content``.
@@ -97,17 +140,9 @@ def scan_headings(content: str) -> list[OrgHeading]:
         escape before they scan.
     """
     headings: list[OrgHeading] = []
-    open_block: str | None = None
 
-    for idx, line in enumerate(content.split("\n"), start=1):
-        if open_block is None:
-            if begin := BLOCK_BEGIN_RE.match(line):
-                open_block = begin.group(1).lower()
-                continue
-        else:
-            end = BLOCK_END_RE.match(line)
-            if end and end.group(1).lower() == open_block:
-                open_block = None
+    for idx, line, inside in scan_block_state(content.split("\n")):
+        if inside:
             continue
 
         if match := HEADING_RE.match(line):
@@ -148,17 +183,9 @@ def find_indented_headings(content: str) -> list[OrgHeading]:
         normal org list bullet.
     """
     headings: list[OrgHeading] = []
-    open_block: str | None = None
 
-    for idx, line in enumerate(content.split("\n"), start=1):
-        if open_block is None:
-            if begin := BLOCK_BEGIN_RE.match(line):
-                open_block = begin.group(1).lower()
-                continue
-        else:
-            end = BLOCK_END_RE.match(line)
-            if end and end.group(1).lower() == open_block:
-                open_block = None
+    for idx, line, inside in scan_block_state(content.split("\n")):
+        if inside:
             continue
 
         if match := INDENTED_HEADING_RE.match(line):
@@ -225,22 +252,11 @@ def escape_headings_in_blocks(content: str) -> tuple[str, list[int]]:
     """
     lines = content.split("\n")
     escaped_lines: list[int] = []
-    open_block: str | None = None
 
-    for idx, line in enumerate(lines):
-        if open_block is None:
-            if begin := BLOCK_BEGIN_RE.match(line):
-                open_block = begin.group(1).lower()
-            continue
-
-        end = BLOCK_END_RE.match(line)
-        if end and end.group(1).lower() == open_block:
-            open_block = None
-            continue
-
-        if ESCAPABLE_RE.match(line):
-            lines[idx] = f",{line}"
-            escaped_lines.append(idx + 1)
+    for number, line, inside in scan_block_state(lines):
+        if inside and ESCAPABLE_RE.match(line):
+            lines[number - 1] = f",{line}"
+            escaped_lines.append(number)
 
     return ("\n".join(lines), escaped_lines)
 

@@ -1548,8 +1548,13 @@ class TaskCorpus:
         Return every task in scope, as a search document.
 
         Returns:
-            One document per task, in file order.
+            One document per task, in file order. No tasks.org means no
+            documents: an installation that keeps none is searching the
+            scopes it does have, not making a failed request.
         """
+        if not global_state.config.tasks_file.exists():
+            return []
+
         sections = (
             [self.section]
             if self.section

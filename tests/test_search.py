@@ -471,3 +471,103 @@ class TestOrdering:
         """
         with pytest.raises(ValueError, match="Unknown order"):
             search(corpus, "compaction", order="sideways")
+
+
+########################################################################
+########################################################################
+#
+class TestTimestampsAreComparable:
+    """Tests that recency means the date, whatever shape it was written in."""
+
+    ####################################################################
+    #
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("<2026-09-03 Thu 10:06>", "2026-09-03 10:06"),
+            ("[2026-09-03 Thu 09:41]", "2026-09-03 09:41"),
+            ("20260825 16:30", "2026-08-25 16:30"),
+            ("2026-08-25", "2026-08-25 00:00"),
+            ("<2026-08-25 Tue>", "2026-08-25 00:00"),
+            ("", ""),
+            ("no date here", ""),
+        ],
+    )
+    def test_every_shape_a_corpus_writes_reads_as_one(self, raw, expected):
+        """
+        GIVEN: a timestamp as one of the corpora happens to write it -- an org
+               active or inactive stamp, a journal date and time, a bare ISO
+               date, or nothing
+        WHEN:  a search document is built from it
+        THEN:  it is stored as YYYY-MM-DD HH:MM, with a missing time as
+               midnight and an unreadable one as empty
+        """
+        assert SearchDoc(ref="r", sort_key=raw).sort_key == expected
+
+    ####################################################################
+    #
+    def test_recency_orders_by_date_not_by_punctuation(self):
+        """
+        GIVEN: records whose timestamps are written in different shapes, as
+               they are across the corpora and even within one -- a task
+               carries <CREATED> until it is edited and [MODIFIED] after
+         WHEN: they are ordered by recency
+         THEN: they come back newest first by date alone
+
+        Sorting the raw strings groups by the bracket instead: "<" sorts
+        before "[", so every never-modified task came back above every
+        modified one, and a journal entry above both.
+        """
+        docs = [
+            SearchDoc(
+                ref="oldest",
+                headline="quernstone",
+                sort_key="<2024-01-01 Mon 09:00>",
+            ),
+            SearchDoc(
+                ref="newest",
+                headline="quernstone",
+                sort_key="[2026-01-01 Thu 09:00]",
+            ),
+            SearchDoc(
+                ref="middle", headline="quernstone", sort_key="20250101 09:00"
+            ),
+        ]
+
+        recent = [
+            h.doc.ref for h in search(docs, "quernstone", order="recent").hits
+        ]
+        oldest = [
+            h.doc.ref for h in search(docs, "quernstone", order="oldest").hits
+        ]
+
+        with check:
+            assert recent == ["newest", "middle", "oldest"]
+        with check:
+            assert oldest == ["oldest", "middle", "newest"]
+
+    ####################################################################
+    #
+    def test_an_undated_record_sorts_last_either_way(self):
+        """
+        GIVEN: a corpus where one record carries no timestamp at all, as a
+               task written without :CREATED: does
+         WHEN: the results are ordered by recency, oldest-first or newest-first
+         THEN: the undated record is last in both
+
+        Neither end of a chronology is where an unknown date belongs, and
+        an empty timestamp sorts before every real one on its own.
+        """
+        docs = [
+            SearchDoc(
+                ref="dated", headline="quernstone", sort_key="2024-01-01"
+            ),
+            SearchDoc(ref="undated", headline="quernstone", sort_key=""),
+        ]
+
+        for order in ("recent", "oldest"):
+            hits = search(docs, "quernstone", order=order).hits
+            with check:
+                assert [h.doc.ref for h in hits][-1] == "undated", (
+                    f"undated should be last under order={order}"
+                )

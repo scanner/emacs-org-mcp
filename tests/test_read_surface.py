@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 from pytest_check import check
 
+from mcp_server.corpus import format_org_search, search_org
 from mcp_server.journal import (
     format_journal_list,
     list_journal_dates,
@@ -52,6 +53,7 @@ BODY_LINES = 40
 LINE_BUDGET = {
     "list_tasks": 1,
     "search_tasks": 1,
+    "search_org": 1,
     # One line for the entry, plus the two-line body preview the description
     # promises.
     "list_journal_entries": 3,
@@ -169,6 +171,34 @@ class TestListingsAreBounded:
             format_task_search(results, detail="index"),
             "search_tasks",
             RECORD_COUNT,
+        )
+
+    ####################################################################
+    #
+    def test_a_cross_scope_search_costs_a_line_per_record_too(
+        self, loaded_org_dir: Path
+    ):
+        """
+        GIVEN: tasks and journal entries that all have long bodies, and a
+               query matching text found only inside those bodies
+         WHEN: every scope is searched at once
+         THEN: each matching record costs one line, whichever scope it came
+               from, and no body text is returned
+
+        A cross-scope search returns the most records of any tool here, so a
+        formatter that echoed content would be most expensive exactly here.
+        """
+        results = search_org(BODY_TERM, order="relevance")
+
+        with check:
+            assert len(results.hits) == RECORD_COUNT * 2, (
+                "fixture should match every task and every journal entry"
+            )
+
+        check_bounded(
+            format_org_search(results, detail="index", limit=RECORD_COUNT * 2),
+            "search_org",
+            RECORD_COUNT * 2,
         )
 
     ####################################################################

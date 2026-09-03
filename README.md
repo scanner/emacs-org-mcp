@@ -151,6 +151,7 @@ All settings can be overridden via environment variables or command-line flags:
 | `ORG_DIR` / `--org-dir` | `~/org` | Base org directory |
 | `JOURNAL_DIR` / `--journal-dir` | `$ORG_DIR/journal` | Journal files directory |
 | `PROJECTS_DIR` / `--projects-dir` | `$ORG_DIR/projects` | Project files directory |
+| `SEARCH_ROOTS` / `--search-root` | `$ORG_DIR` | Directories walked for loose org files. The env var takes several, separated like `PATH`; the flag is repeatable |
 | `ACTIVE_SECTION` / `--active-section` | `Tasks` | Section name for active/TODO tasks |
 | `COMPLETED_SECTION` / `--completed-section` | `Completed Tasks` | Section name for completed/DONE tasks |
 | `HIGH_LEVEL_SECTION` / `--high-level-section` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
@@ -217,6 +218,18 @@ uv run server.py --no-ediff-approval
 | `search_projects`          | Search across all project files                                |
 | `link_task_to_project`     | Add a task link to a project's Related Tasks section           |
 | `regenerate_project_index` | Rebuild `index.org` from all project files                     |
+
+### Cross-Scope Search (1)
+
+| Tool         | Description                                                                          |
+|--------------|--------------------------------------------------------------------------------------|
+| `search_org` | Search tasks, journal, projects and loose org files as one ranked set                |
+
+For open-ended recall, when you do not know in advance whether what you are
+looking for was written up as a task, a journal entry or a design note. It is
+also the only way to reach org content no other tool owns: archived work in
+`<name>_archive` files, and loose `.org` files anywhere under the search roots.
+Every result line names its scope, so you know which tool fetches it.
 
 ### Other
 

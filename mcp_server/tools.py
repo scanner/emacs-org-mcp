@@ -11,6 +11,7 @@ from mcp.types import TextContent, Tool
 
 # project imports
 from mcp_server.config import global_state, server
+from mcp_server.corpus import SCOPES, format_org_search, search_org
 from mcp_server.journal import (
     create_journal_entry,
     format_journal_create_result,
@@ -874,6 +875,68 @@ async def handle_list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="search_org",
+            description=(
+                "Search tasks, journal entries, projects and loose org files together, as one ranked "
+                "result set. This is the tool for open-ended recall -- when you half-remember "
+                "something and do NOT know whether it was written up as a task, a journal entry or a "
+                "design document, which is exactly when a scoped search makes you guess wrong and "
+                "search three times. Every result line names its scope (task:, journal:, project:, "
+                "file:) so you know whether to follow up with get_task, get_journal_entry or "
+                "get_project. "
+                "The files scope is the only way to reach org content that has no typed tool: "
+                "archived work in <name>_archive files, and design notes sitting loose in the org "
+                "directory. A file hit is one heading and the text under it, marked [archived] when "
+                "it comes from an archive, which means the work is finished or abandoned. There is "
+                "no get tool for a loose org file, so each one carries a complete org link on its "
+                "line, file:<path>::<line>, which is how you open it. "
+                "Prefer a scoped search (search_tasks, search_journal, search_projects) when you "
+                "already know the scope: those are cheaper and carry filters this does not, such as "
+                "a date window, a status, or a drawer property."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Search terms, matched as terms rather than as a literal string, so a "
+                            'half-remembered phrase still finds what it describes. Use "double '
+                            'quotes" for an exact phrase.'
+                        ),
+                    },
+                    "scope": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(SCOPES)},
+                        "description": (
+                            "Which corpora to search, any combination. Defaults to all four. "
+                            "files means org files no other tool owns -- tasks.org, the journal "
+                            "files and the project files are always searched under their own "
+                            "scope, never twice."
+                        ),
+                    },
+                    "headline_only": {
+                        "type": "boolean",
+                        "description": (
+                            "Match headlines only, so results are records *about* the subject "
+                            "rather than every record that mentions it in passing."
+                        ),
+                    },
+                    "order": {
+                        "type": "string",
+                        "enum": ["relevance", "recent", "oldest", "matches"],
+                        "description": (
+                            "Result ordering, default relevance. matches orders by how much of "
+                            "the query each record covered. Records carrying no date sort last "
+                            "under recent and oldest alike."
+                        ),
+                    },
+                    **envelope_properties("snippet"),
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
             name="link_task_to_project",
             description=(
                 "Link a task and a project, maintaining both ends in one call: the task's :PROJECT: "
@@ -1215,6 +1278,21 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     old_project.raw_content,
                     new_content,
                     old_project.slug,
+                )
+                return [TextContent(type="text", text=output)]
+
+            case "search_org":
+                results = search_org(
+                    arguments["query"],
+                    scope=arguments.get("scope"),
+                    order=arguments.get("order", "relevance"),
+                    headline_only=arguments.get("headline_only", False),
+                )
+                output = format_org_search(
+                    results,
+                    detail=arguments.get("detail", "snippet"),
+                    limit=arguments.get("limit"),
+                    offset=arguments.get("offset", 0),
                 )
                 return [TextContent(type="text", text=output)]
 

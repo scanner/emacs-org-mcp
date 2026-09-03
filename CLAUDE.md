@@ -74,14 +74,17 @@ emacs-task-journal-mcp/
 ├── manual_test_ediff.py   # Manual test script for ediff approval
 ├── mcp_server/            # Server implementation
 │   ├── config.py          # Config dataclass and global state
+│   ├── corpus.py          # Cross-scope search_org over all four corpora
 │   ├── tools.py           # MCP tool definitions and dispatch
 │   ├── resources.py       # MCP resource definitions and guide loading
 │   ├── tasks.py           # Task CRUD, orgmunge ops, write guard
+│   ├── files.py           # Loose org files as a searchable corpus
 │   ├── journal.py         # Journal CRUD (manual parsing)
 │   ├── orgmunge_patch.py  # Line-oriented fix for orgmunge's drawer lexer
 │   ├── projects.py        # Project CRUD (manual parsing)
 │   ├── properties.py      # Canonical :PROPERTIES: drawer format
 │   ├── results.py         # Shared result envelope: detail levels, paging
+│   ├── search.py          # BM25 ranking, tokenising, orderings
 │   ├── validation.py      # Heading-level validation, block escaping
 │   ├── versioning.py      # Git auto-commit of org file changes
 │   └── utils.py           # Timestamps, atomic file I/O, ediff bridge
@@ -97,6 +100,7 @@ emacs-task-journal-mcp/
     ├── test_journal.py
     ├── test_projects.py
     ├── test_properties.py
+    ├── test_corpus_search.py    # Loose files and cross-scope search
     ├── test_resources.py
     ├── test_task_integrity.py  # Data-loss regression tests
     ├── test_tasks.py
@@ -335,6 +339,86 @@ expensive. `tests/test_read_surface.py` pins the *claim* — records carry long
 bodies and each listing must stay inside a per-record line budget — because
 asserting on wording is keyword whack-a-mole.
 
+### Every Org File Is Searchable (`mcp_server/files.py`, `mcp_server/corpus.py`)
+
+The typed tools encode a set of conventions — a `tasks.org` with named
+sections, dated journal files, one file per project. Every other org file in the
+directory was unreachable by all of them: archived work, dated design notes, a
+scratch file of half-finished thinking. That is precisely the long-tail material
+open-ended recall is for, and the material least likely to have been filed under
+a convention in the first place.
+
+`search_org(query, scope)` unions the four corpora into **one** ranking rather
+than searching each and merging. IDF is a property of the corpus being scored,
+so ranking each scope apart makes the same term worth different amounts in one
+result set — the scores become incomparable exactly where they must be
+compared. Every result line names its scope, because the follow-up call differs
+(`get_task` / `get_journal_entry` / `get_project` / open the org link).
+
+**A record is a heading plus its own body, not its subtree.** Subtree records
+count every deep term again in each ancestor, and BM25 over overlapping
+documents ranks the outermost heading above the one that answers the query. It
+follows that a heading holding nothing but more headings is not a record — its
+text lives in its children, and it would match on its title and return nothing
+to read. Ancestors survive as the path shown on the result line.
+
+Three shapes in the real corpus decide the rest of the parsing, and each breaks
+a different naive split: a file with **no headings at all** (the file is the
+record), a file opening with **text above its first heading** (that text belongs
+to the file), and a file that **never uses level one** (a parent is found by
+level, not by being the previous heading). Heading-like lines inside
+`#+begin_src` blocks are not headings — org disagrees, which is what
+`escape_headings_in_blocks()` repairs on write, but on read the author's meaning
+is what a search should return, and a file this server did not write may never
+have been through that repair.
+
+**The file's name is indexed with every record it holds.** A file named
+`2024.03.11-queue-migration-design.org` states its subject where its headings
+only cover the parts.
+
+**Ownership is by rule, not by directory.** `owned_by_typed_corpus()` skips
+`tasks.org` exactly, journal files matching `JOURNAL_FILENAME_RE`, and
+`projects/*.org` — which is what keeps `tasks.org_archive` searchable while
+`tasks.org` is not counted twice. The predicate applies whatever the scope, so
+`files` means the same set every time rather than depending on what it was asked
+for alongside. `projects/index.org` is owned and therefore skipped: it is
+derived, and a hit in it returns a table of contents where the project is the
+answer.
+
+Splitting this finely does surface generic subsection headings
+(`Description`, `Task items`) as records of their own. Measured over recall
+queries, they stay in the low single digits per page and never rank first, and
+the heading path on the result line says which record each belongs to — so
+merging them into their parent would cost more than it saves.
+
+Archive files are handled as a **convention** (`<name>_archive`), not a named
+file, so it works for whatever files an installation has. Hits from one are
+marked `[archived]`, since that work is finished or abandoned and it describes
+what was done rather than what the code does now.
+
+`files.py` imports nothing from `tasks`, `journal` or `projects` — the skip
+predicate is passed in — so the files scope is testable in a bare directory,
+which is the installation it exists for.
+
+### Timestamps Are Comparable (`mcp_server/search.py`)
+
+`SearchDoc.sort_key` is normalised on construction, so a provider hands over
+whatever timestamp it holds and cannot get the comparison wrong.
+
+It was getting it wrong. Four shapes were being sorted as raw strings — an
+org active timestamp `<...>`, an inactive one `[...]`, a journal's
+`YYYYMMDD HH:MM`, and nothing at all — and `<` sorts before `[`. So
+`order="recent"` grouped by **bracket**: every undated task first, then every
+never-modified one (which carries `<CREATED>`), then every modified one (which
+carries `[MODIFIED]`) — each group correctly dated and the groups in the wrong
+order. A task edited today sorted below one created years ago and never touched.
+Cross-scope search would have compounded it, since the journal's shape sorts
+before both.
+
+A record carrying no date sorts **last in both directions** — neither end of a
+chronology is where an unknown date belongs. This follows what
+`resort_completed_tasks()` already does rather than inventing a date.
+
 ### Linking Is Mechanical (`mcp_server/linking.py`)
 
 A link carries no judgement. Once someone has decided a task belongs to a
@@ -465,6 +549,7 @@ All settings can be overridden via environment variables or command-line flags:
 | `ORG_DIR` / `--org-dir` | `~/org` | Base org directory. The journal and projects directories derive from it unless set explicitly |
 | `JOURNAL_DIR` / `--journal-dir` | `$ORG_DIR/journal` | Journal files directory |
 | `PROJECTS_DIR` / `--projects-dir` | `$ORG_DIR/projects` | Project files directory |
+| `SEARCH_ROOTS` / `--search-root` | `$ORG_DIR` | Directories walked for loose org files. The variable takes several separated like `PATH`; the flag is repeatable |
 | `ACTIVE_SECTION` / `--active-section` | `Tasks` | Section name for active/TODO tasks |
 | `COMPLETED_SECTION` / `--completed-section` | `Completed Tasks` | Section name for completed/DONE tasks |
 | `HIGH_LEVEL_SECTION` / `--high-level-section` | `High Level Tasks (in order)` | Section name for the high-level task checklist |
@@ -600,6 +685,12 @@ Key elements:
 | `link_task_to_project` | Link a task and a project, both ends, no ediff |
 | `unlink_task_from_project` | Remove the link, both ends |
 
+### Cross-Scope Tools
+
+| Tool | Description |
+|------|-------------|
+| `search_org` | Search tasks, journal, projects and loose org files as one ranked set |
+
 ## Code Style
 
 - Use `match/case` statements instead of `if/elif/else` chains
@@ -648,6 +739,9 @@ Expected behavior:
   `Task`, but they do survive a read-modify-write cycle unchanged
 - No support for scheduled/deadline timestamps in parsing (preserved in content)
 - Journal files use manual parsing, not orgmunge
+- Loose org files are searchable but not writable: `search_org` reads them,
+  and there is no tool that edits one or archives a task into an
+  `_archive` file
 - No concurrent access protection (relies on single-user access pattern)
 - orgmunge does not honour `#+begin_src`/`#+begin_example` fencing; the server
   works around it by comma-escaping heading-like lines inside blocks on write,

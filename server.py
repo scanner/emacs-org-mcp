@@ -6,6 +6,7 @@ Usage:
             [--org-dir=<path>] [--journal-dir=<path>]
             [--projects-dir=<path>] [--active-section=<name>] [--completed-section=<name>]
             [--high-level-section=<name>] [--emacsclient-path=<path>]
+            [--search-root=<path>]...
   server.py (-h | --help)
   server.py --version
 
@@ -17,6 +18,8 @@ Options:
   --org-dir=<path>              Base org directory [default: ~/org]
   --journal-dir=<path>          Journal directory (defaults to <org-dir>/journal)
   --projects-dir=<path>         Projects directory (defaults to <org-dir>/projects)
+  --search-root=<path>          Directory to search for loose org files, repeatable
+                                (defaults to <org-dir>; or set SEARCH_ROOTS)
   --active-section=<name>       Active tasks section [default: Tasks]
   --completed-section=<name>    Completed tasks section [default: Completed Tasks]
   --high-level-section=<name>   High level tasks section [default: High Level Tasks (in order)]
