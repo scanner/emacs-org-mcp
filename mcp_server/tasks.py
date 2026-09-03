@@ -5,7 +5,7 @@ Task operations: data structure, orgmunge operations, CRUD, and formatting.
 # system imports
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 # 3rd party imports
@@ -86,6 +86,12 @@ class Task:
     )
     closed: str = ""  # The :CLOSED: timestamp (active, set when marked DONE)
     project: str = ""  # The :PROJECT: this task belongs to, as its CUSTOM_ID
+
+    # Every property in the drawer, including ones this server has no
+    # opinion about, so an installation's own -- a task's ticket in an
+    # external tracker, say -- is available to callers. The named fields
+    # above are conveniences over this.
+    properties: dict[str, str] = field(default_factory=dict)
 
     ###########################################################################
     #
@@ -577,6 +583,7 @@ def parse_tasks_in_section(
         modified = ""
         closed = ""
         project = ""
+        drawer: dict[str, str] = {}
         if hasattr(heading, "properties") and heading.properties:
             custom_id = heading.properties.get("CUSTOM_ID", "")
             task_id = heading.properties.get("ID", "")
@@ -584,6 +591,7 @@ def parse_tasks_in_section(
             modified = heading.properties.get("MODIFIED", "")
             closed = heading.properties.get("CLOSED", "")
             project = heading.properties.get("PROJECT", "")
+            drawer = dict(heading.properties)
 
         headline_text = (
             heading.headline.title
@@ -603,6 +611,7 @@ def parse_tasks_in_section(
                 modified=modified,
                 closed=closed,
                 project=project,
+                properties=drawer,
             )
         )
 
@@ -687,6 +696,7 @@ def find_task(
                     modified=properties.MODIFIED,
                     closed=properties.CLOSED,
                     project=properties.PROJECT or "",
+                    properties=dict(getattr(heading, "properties", {}) or {}),
                 )
                 result = (task, heading, section_heading, org)
                 return result
@@ -702,19 +712,122 @@ def find_task(
 
 ###############################################################################
 #
-def list_tasks(section_name: str) -> list[Task]:
+def task_field(task: Task, field_name: str) -> str | None:
     """
-    List all tasks in a section.
+    Read one filterable field off a task.
+
+    Args:
+        task: The task to read
+        field_name: A drawer property name, or one of the pseudo-fields
+            ``status`` and ``section``, in any case
+
+    Returns:
+        The value, or None when the task does not carry that field.
+
+    Note:
+        Pseudo-fields exist because status and section are what a caller
+        actually wants to filter on and neither lives in the drawer.
+        Everything else comes from the drawer, so a property this server has
+        no opinion about is filterable without being named anywhere in the
+        code -- which is what lets an installation add one without a schema
+        change here.
+    """
+    key = field_name.strip().upper()
+
+    match key:
+        case "STATUS":
+            return task.status
+        case "SECTION":
+            return task.section
+        case _:
+            return task.properties.get(key)
+
+
+###############################################################################
+#
+def field_matches(value: str, wanted: str, field_name: str) -> bool:
+    """
+    Report whether a field's value satisfies a filter.
+
+    Args:
+        value: What the task carries
+        wanted: What the caller asked for
+        field_name: Which field, since one of them compares differently
+
+    Returns:
+        True when they match.
+
+    Note:
+        Comparison is case-insensitive and exact, not substring: a filter is
+        for "this field is that value", and substring matching is what
+        search_tasks is for.
+
+        :PROJECT: is the exception, and deliberately so. The format defines a
+        project's id as ``project-<slug>``, so a caller naming the slug means
+        the same project as one naming the id -- and the live file holds both
+        spellings. Comparing with that prefix stripped from each side is
+        lexical, which keeps this from having to know what a project *is*:
+        tasks.py does not import projects.py, and should not start here.
+    """
+    left, right = value.strip().lower(), wanted.strip().lower()
+
+    if field_name.strip().upper() == "PROJECT":
+        left = left.removeprefix("project-")
+        right = right.removeprefix("project-")
+
+    return left == right
+
+
+###############################################################################
+#
+def matches_filter(task: Task, where: dict[str, str] | None) -> bool:
+    """
+    Report whether a task satisfies every clause of a filter.
+
+    Args:
+        task: The task to test
+        where: Field name to value. An empty or absent filter matches
+            everything.
+
+    Returns:
+        True when every clause matches.
+
+    Note:
+        Clauses are ANDed. A task missing a named field fails rather than
+        matching, so filtering on a property returns the tasks that carry
+        it rather than every task in the file.
+    """
+    if not where:
+        return True
+
+    for field_name, wanted in where.items():
+        value = task_field(task, field_name)
+        if value is None or not field_matches(value, wanted, field_name):
+            return False
+
+    return True
+
+
+###############################################################################
+#
+def list_tasks(
+    section_name: str, where: dict[str, str] | None = None
+) -> list[Task]:
+    """
+    List the tasks in a section, optionally filtered.
 
     Args:
         section_name: Name of the section to list tasks from
+        where: Optional field-to-value filter; see :func:`matches_filter`
 
     Returns:
-        List of all tasks in the specified section
+        The section's tasks in file order, which is priority order.
     """
     org = get_org()
     section_heading = find_section(org, section_name)
-    return parse_tasks_in_section(section_heading, section_name)
+    tasks = parse_tasks_in_section(section_heading, section_name)
+
+    return [task for task in tasks if matches_filter(task, where)]
 
 
 ###############################################################################
@@ -1412,16 +1525,21 @@ class TaskCorpus:
     ###########################################################################
     #
     def __init__(
-        self, section: str | None = None, headline_only: bool = False
+        self,
+        section: str | None = None,
+        headline_only: bool = False,
+        where: dict[str, str] | None = None,
     ) -> None:
         """
         Args:
             section: Restrict to one section, or None for every section
             headline_only: Index only headlines, so a query matches what a
                 task is *about* rather than anything mentioned in its body
+            where: Optional field-to-value filter; see :func:`matches_filter`
         """
         self.section = section
         self.headline_only = headline_only
+        self.where = where
 
     ###########################################################################
     #
@@ -1443,7 +1561,7 @@ class TaskCorpus:
 
         docs: list[SearchDoc] = []
         for name in sections:
-            for task in list_tasks(name):
+            for task in list_tasks(name, self.where):
                 docs.append(
                     SearchDoc(
                         ref=task.custom_id or task.headline,
@@ -1466,6 +1584,7 @@ def search_tasks(
     section: str | None = None,
     headline_only: bool = False,
     order: str = "relevance",
+    where: dict[str, str] | None = None,
 ) -> Results:
     """
     Search tasks, ranked by relevance.
@@ -1475,6 +1594,8 @@ def search_tasks(
         section: Restrict to one section, or None for all
         headline_only: Match against headlines rather than whole tasks
         order: One of the search module's orderings
+        where: Optional field-to-value filter, applied before ranking so that
+            relevance is computed over the tasks the caller asked about
 
     Returns:
         Ranked :class:`~mcp_server.search.Results`, whose hits carry the
@@ -1484,9 +1605,131 @@ def search_tasks(
         Relevance rather than recency by default: a task list is not a
         chronology, and a task is looked for by what it is about.
     """
-    corpus = TaskCorpus(section=section, headline_only=headline_only)
+    corpus = TaskCorpus(
+        section=section, headline_only=headline_only, where=where
+    )
 
     return search(corpus.documents(), query, order=order)
+
+
+###############################################################################
+###############################################################################
+#
+@dataclass
+class OrgStats:
+    """
+    Counts and totals for the tasks in tasks.org.
+
+    Carries no task content -- only numbers about the tasks, which is what
+    makes it cheap to ask for however large the files are.
+
+    Attributes:
+        tasks: How many tasks the parser can see, across every section
+        by_section: Task count per section
+        by_project: Task count per ``:PROJECT:`` value, with unfiled tasks
+            under "(none)"
+        items_done: Checklist items marked done
+        items_total: Checklist items in total
+        unparsed_tasks: Tasks present in the file but invisible to the parser
+        lost_sections: Section headings the parser cannot resolve
+    """
+
+    tasks: int
+    by_section: dict[str, int]
+    by_project: dict[str, int]
+    items_done: int
+    items_total: int
+    unparsed_tasks: int
+    lost_sections: list[str]
+
+
+###############################################################################
+#
+def org_stats() -> "OrgStats":
+    """
+    Gather counts and totals for the tasks in tasks.org.
+
+    Returns:
+        Counts by section and by project, plus checklist totals and the number
+        of tasks the parser cannot resolve. No task content is included, so the
+        result is the same handful of numbers however large the files are.
+
+    Note:
+        These are the figures a repair checks before and after, so they are
+        gathered in one call.
+    """
+    sections = [
+        global_state.config.active_section,
+        global_state.config.completed_section,
+    ]
+
+    by_section: dict[str, int] = {}
+    by_project: dict[str, int] = {}
+    tasks: list[Task] = []
+
+    for name in sections:
+        found = list_tasks(name)
+        by_section[name] = len(found)
+        tasks.extend(found)
+
+    for task in tasks:
+        key = task.project.strip() or "(none)"
+        by_project[key] = by_project.get(key, 0) + 1
+
+    # Checklist totals, counting only org's own markers. A local convention
+    # such as [>] is displayed elsewhere but is not a checkbox to org, so
+    # counting it here would disagree with what org itself would write.
+    done = total = 0
+    for task in tasks:
+        for line in task.content.split("\n"):
+            if match := re.match(r"^- \[(.)\]", line.strip()):
+                if match.group(1) in " X-":
+                    total += 1
+                    done += match.group(1) == "X"
+
+    return OrgStats(
+        tasks=len(tasks),
+        by_section=by_section,
+        by_project=dict(sorted(by_project.items())),
+        items_done=done,
+        items_total=total,
+        unparsed_tasks=len(find_unparsed_tasks()),
+        lost_sections=find_lost_sections(),
+    )
+
+
+###############################################################################
+#
+def format_org_stats(stats: OrgStats) -> str:
+    """
+    Render the counts compactly.
+
+    Args:
+        stats: What :func:`org_stats` returned
+
+    Returns:
+        A short report, a few lines rather than a record listing.
+    """
+    lines = [f"{stats.tasks} tasks", "", "By section:"]
+    lines.extend(
+        f"    {count:5d}  {name}" for name, count in stats.by_section.items()
+    )
+
+    lines.extend(["", "By project:"])
+    lines.extend(
+        f"    {count:5d}  {name}" for name, count in stats.by_project.items()
+    )
+
+    lines.extend(
+        ["", f"Checklist items: {stats.items_done}/{stats.items_total} done"]
+    )
+
+    if stats.unparsed_tasks:
+        lines.append(f"⚠ {stats.unparsed_tasks} task(s) the parser cannot see")
+    if stats.lost_sections:
+        lines.append(f"⚠ lost sections: {stats.lost_sections}")
+
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -1687,12 +1930,15 @@ def format_unparsed_warning(unparsed: list[str]) -> list[str]:
 
 ###############################################################################
 #
-def task_to_record(task: Task) -> Record:
+def task_to_record(task: Task, show: list[str] | None = None) -> Record:
     """
     Adapt a task to the shared result envelope.
 
     Args:
         task: The task to adapt
+        show: Property names to append to the line, e.g. ``["PROJECT"]``. A
+            property the task does not carry is omitted rather than shown
+            empty, so the line stays readable across a mixed result set.
 
     Returns:
         A :class:`Record` with the task's columns rendered.
@@ -1707,11 +1953,17 @@ def task_to_record(task: Task) -> Record:
     identity = f"(#{task.custom_id})" if task.custom_id else ""
     age = format_age(task.modified or task.created)
 
+    projected = [
+        f"{name.strip().upper()}={value}"
+        for name in (show or [])
+        if (value := task_field(task, name))
+    ]
+
     return Record(
         ref=task.custom_id or task.headline,
         prefix=task.status,
         title=f"{ticket}{task.headline}",
-        suffix=" ".join(part for part in (identity, age) if part),
+        suffix=" ".join(part for part in (identity, age, *projected) if part),
         content=task.content,
     )
 
@@ -1743,6 +1995,7 @@ def format_task_list(
     detail: DetailLevel = "index",
     limit: int | None = None,
     offset: int = 0,
+    show: list[str] | None = None,
 ) -> str:
     """
     Format a list of tasks for display.
@@ -1760,7 +2013,7 @@ def format_task_list(
         carried on every page.
     """
     return render(
-        [task_to_record(task) for task in tasks],
+        [task_to_record(task, show) for task in tasks],
         tool="list_tasks",
         header=section,
         detail=detail,
@@ -1777,6 +2030,7 @@ def format_task_search(
     detail: DetailLevel = "snippet",
     limit: int | None = None,
     offset: int = 0,
+    show: list[str] | None = None,
 ) -> str:
     """
     Format ranked task search results.
@@ -1799,7 +2053,7 @@ def format_task_search(
     """
     records = []
     for hit in results.hits:
-        record = task_to_record(hit.doc.payload)
+        record = task_to_record(hit.doc.payload, show)
         record.score = hit.score
         record.matched_terms = hit.matched_terms
         record.total_terms = hit.total_terms

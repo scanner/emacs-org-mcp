@@ -25,6 +25,10 @@ Three detail levels:
     is why it is the default for search and why it exists at all -- an index
     line says *which* record matched but never *why*, so every search would
     otherwise cost a second, blind fetch.
+``items``
+    The index line plus the record's checklist -- its progress cookie and
+    checkbox lines, and nothing else. This is the level for seeing how far
+    along a set of records is.
 ``full``
     The whole record. Sizes are skewed enough -- journal entries run to a
     median of 11 lines and a maximum of 927 -- that this is worth asking for
@@ -40,9 +44,9 @@ from typing import Literal
 # Constants
 # =============================================================================
 
-DetailLevel = Literal["index", "snippet", "full"]
+DetailLevel = Literal["index", "snippet", "items", "full"]
 
-DETAIL_LEVELS: tuple[str, ...] = ("index", "snippet", "full")
+DETAIL_LEVELS: tuple[str, ...] = ("index", "snippet", "items", "full")
 
 # Results returned when the caller does not ask for a specific number. Each
 # detail level costs roughly five times the lines of the one below it, so the
@@ -50,13 +54,19 @@ DETAIL_LEVELS: tuple[str, ...] = ("index", "snippet", "full")
 # whichever level was asked for. Naming a limit overrides this entirely.
 DEFAULT_LIMIT = 50
 DEFAULT_SNIPPET_LIMIT = 10
+DEFAULT_ITEMS_LIMIT = 10
 DEFAULT_FULL_LIMIT = 3
 
 DEFAULT_LIMIT_FOR: dict[str, int] = {
     "index": DEFAULT_LIMIT,
     "snippet": DEFAULT_SNIPPET_LIMIT,
+    "items": DEFAULT_ITEMS_LIMIT,
     "full": DEFAULT_FULL_LIMIT,
 }
+
+# Most checklist lines any one record contributes at ``items``, so a long
+# task stays cheap to survey.
+MAX_ITEM_LINES = 12
 
 # Lines of context shown either side of a matching line at ``snippet``.
 SNIPPET_CONTEXT = 1
@@ -65,6 +75,10 @@ SNIPPET_CONTEXT = 1
 # that matches a common word fifty times would cost fifty lines on its own,
 # which is the unbounded behaviour the level exists to avoid.
 MAX_SNIPPET_LINES = 4
+
+# A progress cookie, [1/3] or [50%], and a checkbox item of any marker.
+COOKIE_RE = re.compile(r"\[(?:\d*/\d*|\d+%)\]")
+CHECKBOX_RE = re.compile(r"^- \[.\]")
 
 # Longest a title may run before it is trimmed. Only the title is trimmed --
 # the prefix and suffix carry status and identity, which are what a follow-up
@@ -217,6 +231,45 @@ def snippet_lines(content: str, query_terms: list[str]) -> list[str]:
 
 ###############################################################################
 #
+def checklist_lines(content: str) -> list[str]:
+    """
+    Return a record's checklist: its progress cookies and checkbox lines.
+
+    Args:
+        content: The record body
+
+    Returns:
+        Up to :data:`MAX_ITEM_LINES` lines -- any heading carrying a progress
+        cookie, and any checkbox item under it.
+
+    Note:
+        Deliberately lexical rather than parsed. A checkbox is a line, a cookie
+        is on a heading, and neither needs the org tree to find; keeping this
+        in the envelope means it works for any record type without the envelope
+        learning what a task is.
+
+        Every marker is shown, org's own and any local convention alike:
+        this displays what is written, so it takes no view on which markers
+        count.
+    """
+    if not content:
+        return []
+
+    chosen: list[str] = []
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if COOKIE_RE.search(stripped) and stripped.startswith("*"):
+            chosen.append(stripped.lstrip("* "))
+        elif CHECKBOX_RE.match(stripped):
+            chosen.append(stripped)
+        if len(chosen) >= MAX_ITEM_LINES:
+            break
+
+    return chosen
+
+
+###############################################################################
+#
 def render_record(record: Record, number: int) -> str:
     """
     Render one record's index line.
@@ -348,6 +401,12 @@ def render(
                     f"        > {line}"
                     for line in snippet_lines(record.content, query_terms)
                 )
+            case "items":
+                lines.extend(
+                    f"        {line}"
+                    for line in checklist_lines(record.content)
+                )
+
             case "full":
                 if record.content.strip():
                     lines.extend(
