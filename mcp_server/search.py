@@ -123,6 +123,18 @@ HEADLINE_WEIGHT = 2
 # Orderings a caller may ask for.
 ORDERS: tuple[str, ...] = ("relevance", "recent", "oldest", "matches")
 
+# A date, with optional separators and an optional time after it, anywhere in a
+# timestamp. This reads every shape the corpora carry: an org active timestamp
+# <2026-09-03 Thu 10:06>, an inactive one [2026-09-03 Thu 09:41], a journal's
+# file-and-time "20260825 16:30", and a plain ISO date.
+TIMESTAMP_RE = re.compile(
+    r"(\d{4})-?(\d{2})-?(\d{2})(?:\D+(\d{2}):(\d{2}))?",
+)
+
+# Sorts after every real timestamp, and before every real one when reversed,
+# so a record with no date is last whichever way the results are ordered.
+UNDATED = ""
+
 
 # =============================================================================
 # Tokenization
@@ -283,6 +295,50 @@ def parse_query(raw: str) -> Query:
 
 
 ###############################################################################
+#
+def normalize_sort_key(raw: str) -> str:
+    """
+    Reduce any timestamp the corpora carry to one comparable shape.
+
+    Args:
+        raw: A timestamp as its own corpus writes it, or anything else
+
+    Returns:
+        `YYYY-MM-DD HH:MM`, with a missing time as `00:00`, or
+        :data:`UNDATED` when no date can be read.
+
+    Note:
+        Sorting is lexical, so the surrounding punctuation decides the order
+        unless it is stripped. The corpora write four shapes -- `<...>` for
+        an org active timestamp, `[...]` for an inactive one, `20260825
+        16:30` for a journal entry, and nothing at all -- and `<` sorts
+        before `[` whatever the dates say. Ordering tasks by recency put
+        every never-modified task, which carries `<CREATED>`, above every
+        modified one, which carries `[MODIFIED]`: correct within each group
+        and wrong between them.
+
+        Reading the date out rather than trimming the brackets is what also
+        makes the shapes comparable *across* corpora, which is what a
+        cross-scope search sorts.
+
+        The result stays a string rather than becoming a datetime, because
+        ordering is all a sort key is ever used for and `YYYY-MM-DD HH:MM`
+        compares lexically exactly as it compares chronologically. The corpora
+        hold text, so parsing every timestamp into a datetime would mean
+        deciding what a malformed or timeless one becomes, and org timestamps
+        carry a localised day name that `strptime` would have to be taught.
+        Where a real date is genuinely needed -- the journal's day window --
+        the code that needs it builds one.
+    """
+    match = TIMESTAMP_RE.search(raw)
+    if not match:
+        return UNDATED
+
+    year, month, day, hour, minute = match.groups()
+    return f"{year}-{month}-{day} {hour or '00'}:{minute or '00'}"
+
+
+###############################################################################
 ###############################################################################
 #
 @dataclass
@@ -295,12 +351,19 @@ class SearchDoc:
             journal date and time, a project slug, or a path and heading path.
         headline: The record's own title. Terms here count for more.
         body: Everything else that is searchable.
-        sort_key: An orderable string standing for recency, e.g. an ISO date
-            or an org timestamp. Used for the recency orderings and, crucially,
-            to break score ties -- without it equal scores come back in
-            directory-iteration order, which differs between machines.
+        sort_key: A timestamp standing for recency, in whatever shape the
+            corpus writes it -- an org `<...>` or `[...]` timestamp, a
+            journal date and time, or an ISO date. Used for the recency
+            orderings and, crucially, to break score ties: without it equal
+            scores come back in directory-iteration order, which differs
+            between machines.
         payload: The domain object this came from, carried through untouched so
             a caller gets back a Task or JournalEntry rather than a dict.
+
+    Note:
+        `sort_key` is normalised on construction rather than by each
+        provider, so a corpus hands over the timestamp it happens to hold and
+        cannot get the comparison wrong. A new provider gets this by existing.
     """
 
     ref: str
@@ -308,6 +371,12 @@ class SearchDoc:
     body: str = ""
     sort_key: str = ""
     payload: Any = None
+
+    ###########################################################################
+    #
+    def __post_init__(self) -> None:
+        """Reduce the given timestamp to one comparable shape."""
+        self.sort_key = normalize_sort_key(self.sort_key)
 
 
 ###############################################################################
@@ -551,6 +620,11 @@ def order_hits(hits: list[Hit], order: str) -> list[Hit]:
         sorting on score alone leaves their order to however the filesystem
         happened to enumerate the directory -- which differs between machines
         and makes the same query look unstable.
+
+        A record carrying no date sorts last in both directions. Neither end
+        of a chronology is where an unknown date belongs, and this follows
+        what :func:`~mcp_server.tasks.resort_completed_tasks` already does
+        rather than inventing a date to sort by.
     """
     key: Callable[[Hit], tuple]
 
@@ -558,17 +632,21 @@ def order_hits(hits: list[Hit], order: str) -> list[Hit]:
         case "relevance":
 
             def key(hit: Hit) -> tuple:
-                return (-hit.score, _descending(hit.doc.sort_key))
+                return (-hit.score, *_by_recency(hit.doc.sort_key))
 
         case "recent":
 
             def key(hit: Hit) -> tuple:
-                return (_descending(hit.doc.sort_key), -hit.score)
+                return (*_by_recency(hit.doc.sort_key), -hit.score)
 
         case "oldest":
 
             def key(hit: Hit) -> tuple:
-                return (hit.doc.sort_key, -hit.score)
+                return (
+                    _undated(hit.doc.sort_key),
+                    hit.doc.sort_key,
+                    -hit.score,
+                )
 
         case "matches":
 
@@ -576,7 +654,7 @@ def order_hits(hits: list[Hit], order: str) -> list[Hit]:
                 return (
                     -hit.matched_terms,
                     -hit.score,
-                    _descending(hit.doc.sort_key),
+                    *_by_recency(hit.doc.sort_key),
                 )
 
         case _:
@@ -589,20 +667,50 @@ def order_hits(hits: list[Hit], order: str) -> list[Hit]:
 
 ###############################################################################
 #
+def _undated(sort_key: str) -> int:
+    """
+    Rank a record by whether it has a date at all.
+
+    Args:
+        sort_key: A normalised timestamp, possibly :data:`UNDATED`
+
+    Returns:
+        0 when dated and 1 when not, so that sorting on this first puts
+        undated records last however the dates themselves are ordered.
+    """
+    return 0 if sort_key else 1
+
+
+###############################################################################
+#
+def _by_recency(sort_key: str) -> tuple[int, str]:
+    """
+    Return the sort components that put the newest record first.
+
+    Args:
+        sort_key: A normalised timestamp
+
+    Returns:
+        The undated rank followed by a newest-first form of the timestamp.
+    """
+    return (_undated(sort_key), _descending(sort_key))
+
+
+###############################################################################
+#
 def _descending(sort_key: str) -> str:
     """
     Return a key that sorts a timestamp newest-first.
 
     Args:
-        sort_key: An orderable string, typically an ISO or org date
+        sort_key: A normalised timestamp
 
-        Returns:
+    Returns:
         A string that sorts in reverse order of the input.
 
     Note:
-        Org and ISO dates sort correctly as text because they are written
-        most-significant first, so reversing them is a matter of complementing
-        each digit rather than parsing a date.
+        A normalised timestamp is written most-significant first, so reversing
+        it is a matter of complementing each digit rather than parsing a date.
     """
     return "".join(
         str(9 - int(char)) if char.isdigit() else char for char in sort_key
