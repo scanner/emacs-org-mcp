@@ -85,6 +85,8 @@ emacs-task-journal-mcp/
 │   ├── validation.py      # Heading-level validation, block escaping
 │   ├── versioning.py      # Git auto-commit of org file changes
 │   └── utils.py           # Timestamps, atomic file I/O, ediff bridge
+├── docs/                  # Runbooks for one-off repairs
+│   └── repair-link-drift.md
 ├── resources/guides/      # MCP resource guide files
 │   ├── task-format.md
 │   ├── journal-format.md
@@ -360,6 +362,11 @@ the `#task-id` anchor, not the rendered line, because a headline changes over a
 task's life and a text comparison would append a second link after any rename.
 The task end accepts any `:PROJECT:` resolving to the same project and rewrites
 it to canonical form, so an unsanctioned value is repaired by ordinary use.
+
+`docs/repair-link-drift.md` is the runbook for bringing an installation's
+existing links into this format. It is written to be handed to a session on
+another host, since the drift is per-installation and every org directory that
+predates this tool has some.
 
 A task belongs to one project: linking one already linked elsewhere is refused
 rather than silently repointed, which would leave the first project pointing at
