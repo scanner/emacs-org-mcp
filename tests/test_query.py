@@ -53,13 +53,13 @@ def mixed_tasks(temp_org_dir: Path) -> Path:
     """
     active = [
         with_props(
-            make_task("Widget one", "task-w1", task_items=[(True, "a"), (False, "b")]),
+            make_task(
+                "Widget one", "task-w1", task_items=[(True, "a"), (False, "b")]
+            ),
             PROJECT="project-widgets",
             JIRA="GH-1",
         ),
-        with_props(
-            make_task("Widget two", "task-w2"), PROJECT="widgets"
-        ),
+        with_props(make_task("Widget two", "task-w2"), PROJECT="widgets"),
         with_props(
             make_task("Gadget one", "task-g1"), PROJECT="project-gadgets"
         ),
@@ -92,13 +92,35 @@ class TestFiltering:
     @pytest.mark.parametrize(
         "where, expected",
         [
-            pytest.param(None, ["task-w1", "task-w2", "task-g1", "task-u1"], id="no-filter"),
-            pytest.param({"PROJECT": "project-widgets"}, ["task-w1", "task-w2"], id="canonical"),
-            pytest.param({"PROJECT": "widgets"}, ["task-w1", "task-w2"], id="bare-slug"),
-            pytest.param({"PROJECT": "WIDGETS"}, ["task-w1", "task-w2"], id="case-insensitive"),
-            pytest.param({"JIRA": "GH-1"}, ["task-w1"], id="undeclared-property"),
-            pytest.param({"jira": "gh-1"}, ["task-w1"], id="field-name-any-case"),
-            pytest.param({"PROJECT": "widgets", "JIRA": "GH-1"}, ["task-w1"], id="clauses-are-anded"),
+            pytest.param(
+                None,
+                ["task-w1", "task-w2", "task-g1", "task-u1"],
+                id="no-filter",
+            ),
+            pytest.param(
+                {"PROJECT": "project-widgets"},
+                ["task-w1", "task-w2"],
+                id="canonical",
+            ),
+            pytest.param(
+                {"PROJECT": "widgets"}, ["task-w1", "task-w2"], id="bare-slug"
+            ),
+            pytest.param(
+                {"PROJECT": "WIDGETS"},
+                ["task-w1", "task-w2"],
+                id="case-insensitive",
+            ),
+            pytest.param(
+                {"JIRA": "GH-1"}, ["task-w1"], id="undeclared-property"
+            ),
+            pytest.param(
+                {"jira": "gh-1"}, ["task-w1"], id="field-name-any-case"
+            ),
+            pytest.param(
+                {"PROJECT": "widgets", "JIRA": "GH-1"},
+                ["task-w1"],
+                id="clauses-are-anded",
+            ),
             pytest.param({"JIRA": "GH-999"}, [], id="value-nothing-has"),
             pytest.param({"NOSUCHPROP": "x"}, [], id="field-nothing-has"),
         ],
@@ -135,7 +157,9 @@ class TestFiltering:
         with check:
             assert ids(list_tasks("Tasks", {"JIRA": "GH-1"})) == ["task-w1"]
         with check:
-            assert "task-u1" not in ids(list_tasks("Tasks", {"PROJECT": "widgets"}))
+            assert "task-u1" not in ids(
+                list_tasks("Tasks", {"PROJECT": "widgets"})
+            )
 
     ####################################################################
     #
@@ -151,7 +175,9 @@ class TestFiltering:
         to filter by, so they are worth the special case.
         """
         with check:
-            assert ids(list_tasks("Completed Tasks", {"status": "DONE"})) == ["task-w3"]
+            assert ids(list_tasks("Completed Tasks", {"status": "DONE"})) == [
+                "task-w3"
+            ]
         with check:
             assert ids(list_tasks("Tasks", {"status": "DONE"})) == []
 
@@ -236,7 +262,10 @@ class TestProjectionAndItems:
         otherwise costs a whole task read per record to see one number.
         """
         output = render(
-            [task_to_record(t) for t in list_tasks("Tasks", {"CUSTOM_ID": "task-w1"})],
+            [
+                task_to_record(t)
+                for t in list_tasks("Tasks", {"CUSTOM_ID": "task-w1"})
+            ],
             tool="list_tasks",
             header="Tasks",
             detail="items",
