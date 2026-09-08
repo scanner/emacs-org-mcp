@@ -71,8 +71,11 @@ emacs-task-journal-mcp/
 ├── uv.lock                # Lock file
 ├── server.py              # Entry point
 ├── emacs_ediff.el         # Emacs Lisp for ediff approval workflow
+├── emacs_archive.el       # Emacs Lisp that drives org-archive-subtree
 ├── manual_test_ediff.py   # Manual test script for ediff approval
+├── manual_test_archive.py # Manual test script for archiving via Emacs
 ├── mcp_server/            # Server implementation
+│   ├── archiving.py       # Archive a task out of tasks.org, by way of Emacs
 │   ├── config.py          # Config dataclass and global state
 │   ├── corpus.py          # Cross-scope search_org over all four corpora
 │   ├── tools.py           # MCP tool definitions and dispatch
@@ -87,13 +90,14 @@ emacs-task-journal-mcp/
 │   ├── search.py          # BM25 ranking, tokenising, orderings
 │   ├── validation.py      # Heading-level validation, block escaping
 │   ├── versioning.py      # Git auto-commit of org file changes
-│   └── utils.py           # Timestamps, atomic file I/O, ediff bridge
+│   └── utils.py           # Timestamps, atomic file I/O, Emacs bridge
 ├── resources/guides/      # MCP resource guide files
 │   ├── task-format.md
 │   ├── journal-format.md
 │   └── project-format.md
 └── tests/
     ├── conftest.py        # Shared fixtures and factories
+    ├── test_archiving.py
     ├── test_config.py
     ├── test_ediff.py
     ├── test_factories.py
@@ -453,6 +457,98 @@ The project index is a derived artifact rebuilt from a directory scan. It is
 refreshed after a link and a failure there is logged, not raised — a healthy
 link must not report as broken because a derived file could not be rebuilt.
 
+### Archiving Is Org's Job (`mcp_server/archiving.py`, `emacs_archive.el`)
+
+Org already knows how to archive a subtree — which file receives it, what
+context to record with it, what level it arrives at. So Emacs does the move,
+`org-archive-subtree` over `emacsclient`, and the server owns everything
+around it. The elisp is one function: widen, find the heading by
+`:CUSTOM_ID:`, archive, save both buffers, return the resolved archive path.
+Anything else is an `error`, which reaches Python as exit 1 with the message.
+
+**This is the one write that legitimately removes a task**, which is precisely
+what `write_tasks_org`'s guard refuses. It cannot use that path, so every
+guarantee that path provides is rebuilt here:
+
+| guarantee | how |
+|---|---|
+| nothing else vanished | `verify_archive()` — raw-text scans, per task |
+| recoverable | `backup_file()` pre-image, taken before Emacs is invoked |
+| recorded in git | `commit_file()` on tasks.org and on the archive |
+
+**Keyed on `:CUSTOM_ID:`.** `find_task` resolves a substring to its *first*
+match — right for reading a task, wrong for removing one. A task with no id
+gets one written through the ordinary guarded path, committed on its own,
+before Emacs is invoked; the tasks most worth archiving are the oldest, which
+are exactly those predating the convention. The id is validated and quoted
+(`quote_elisp`) because it is interpolated into elisp source, where an
+unescaped quote is not a bad argument but different code.
+
+**Prefer a duplicate to a hole.** On a verification failure tasks.org is
+restored from the pre-image — through `write_file()`, so the rollback is a
+commit like any other write — and the archived copy is left where org put it.
+A task in two places is recoverable by hand; a task in neither is not. The
+report names the pre-image and says to revert the tasks.org buffer, which
+Emacs is still holding.
+
+**The archive location is read from Emacs, never assumed.**
+`org-archive-location` is overridable globally, per-file with `#+ARCHIVE:`,
+and per-subtree with an `:ARCHIVE:` property, so the elisp reports what
+`org-archive--compute-location` resolved at point. Two of org's answers change
+what happens next and are reported: a location outside `SEARCH_ROOTS` is
+unreachable by `search_org`, and one not named `<name>_archive` will not be
+marked `[archived]`.
+
+**Emacs is asked before anything is written.** Archiving may have to write
+a `:CUSTOM_ID:` first, and a file whose buffer holds unsaved edits must not be
+written at all — so `ensure_emacs_ready()` puts the buffer question up front
+rather than letting it surface when the archive itself is refused. Asking
+afterwards left a property addition, and its commit, for a task that never
+moved, in a file whose buffer would clobber it on the user's next save. The
+archive checks again when it runs: the calls are seconds apart, but the buffer
+belongs to somebody who is typing in it.
+
+**Resolution is all-or-nothing; archiving is one at a time.** An identifier
+matching nothing or matching two refuses the whole call and names the
+candidates — what the user confirmed was a list, and archiving the subset that
+happened to resolve is not that list. The run then stops at the first failure,
+since whatever stopped one task will stop the next.
+
+**Both ends, as with linking.** The project's `Related Tasks` line has its
+path rewritten to the archive, keeping the `::#task-id` anchor that
+`linking.py` judges an existing link by, so the project keeps its record of
+work that happened. `:PROJECT:` travels into the archive inside the drawer.
+The `High Level Tasks` line is removed *after* the archive verifies — before
+would mean a failed archive deleting a live task's tracking line — and
+reported as `removed` or `not found`, since the description match is fuzzy
+enough to no-op.
+
+That removal is why `remove_high_level_task()` takes **text** where its `add`
+and `update` siblings take an `Org`: those run inside `create_task` and
+`update_task`, which are already rewriting the file through orgmunge, whereas
+Emacs has just written this file with its blank lines intact. Rendering the
+whole file through the parser to delete one line would collapse every blank
+line between sections, turning a move into a diff over everything.
+
+**No ediff, and no `confirmed` parameter.** Mechanical, like linking and
+`reorder_task`: nothing here is generated prose a person might want to edit
+first. What archiving needs is *direction*, and a flag the caller sets itself
+proves nothing — so the protocol (user named them / user described a class,
+so list and ask / you think they are stale, so suggest and wait) lives in the
+tool description and the task guide, which is what an agent reads before
+calling.
+
+**Emacs absent is a hard failure**, the deliberate opposite of
+`request_ediff_approval`'s shrug: falling back there means skipping a review,
+here it would mean nothing does the work. It is not gated on
+`EMACS_EDIFF_APPROVAL`, which configures an approval UI rather than whether
+Emacs is reachable.
+
+`run_org_archive()` is the seam. `tests/test_archiving.py` replaces it with a
+fake that *really* moves the heading between files, since verification reads
+the files rather than the report; `manual_test_archive.py` covers the elisp
+against a live Emacs in a throwaway org directory.
+
 ### Every Org Path Follows `org_dir` (`mcp_server/config.py`)
 
 `journal_dir` and `projects_dir` are derived from `org_dir` in
@@ -660,6 +756,7 @@ Key elements:
 | `move_task` | Move task between sections |
 | `reorder_task` | Move a task within its section (position = priority) |
 | `resort_completed_tasks` | One-off: sort completed newest-first by `:CLOSED:` |
+| `archive_tasks` | Archive tasks out of tasks.org via org's `org-archive-subtree` |
 | `search_tasks` | Search tasks by query |
 
 ### Journal Tools
@@ -740,8 +837,8 @@ Expected behavior:
 - No support for scheduled/deadline timestamps in parsing (preserved in content)
 - Journal files use manual parsing, not orgmunge
 - Loose org files are searchable but not writable: `search_org` reads them,
-  and there is no tool that edits one or archives a task into an
-  `_archive` file
+  and no tool edits one. `archive_tasks` writes into an `_archive` file only
+  by way of org itself; nothing unarchives a task
 - No concurrent access protection (relies on single-user access pattern)
 - orgmunge does not honour `#+begin_src`/`#+begin_example` fencing; the server
   works around it by comma-escaping heading-like lines inside blocks on write,

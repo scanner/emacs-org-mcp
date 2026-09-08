@@ -10,6 +10,7 @@ from datetime import date, datetime
 from mcp.types import TextContent, Tool
 
 # project imports
+from mcp_server.archiving import archive_tasks, format_archive_report
 from mcp_server.config import global_state, server
 from mcp_server.corpus import SCOPES, format_org_search, search_org
 from mcp_server.journal import (
@@ -486,6 +487,43 @@ async def handle_list_tools() -> list[Tool]:
                 "that predate that behaviour. It overwrites any other ordering the section may have."
             ),
             inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="archive_tasks",
+            description=(
+                "Archive tasks out of tasks.org by calling org's own org-archive-subtree in Emacs. "
+                "The subtree moves, with its properties, to the archive file org is configured to use, "
+                "and leaves tasks.org -- use it for work that is finished and recorded, or abandoned, "
+                "to keep tasks.org small enough to read and search cheaply. "
+                "ONLY archive tasks the user has named or confirmed. "
+                "(1) If the user named specific tasks, archive them. "
+                "(2) If the user described a class of tasks ('everything about the old importer', "
+                "'anything untouched since the spring'), find the candidates, present the headlines as a "
+                "list, and ask before calling -- your reading of the class may not be theirs. "
+                "(3) If YOU think tasks look stale, say which and why, and wait to be told: never archive "
+                "on your own initiative. "
+                "Every identifier must name exactly one task -- prefer :CUSTOM_ID:, which list_tasks shows "
+                "on every line -- or the whole call is refused and the candidates named, so a confirmed "
+                "list is never partly archived. "
+                "There is no approval dialog: the move is mechanical. Archived tasks stay readable through "
+                "search_org, marked [archived]. Nothing unarchives them."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "identifiers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "description": (
+                            "The tasks to archive, each naming exactly one task: :CUSTOM_ID: (e.g. "
+                            "'task-gh-28'), ticket ID (e.g. 'GH-28'), or a headline substring unique to "
+                            "one task."
+                        ),
+                    },
+                },
+                "required": ["identifiers"],
+            },
         ),
         Tool(
             name="org_stats",
@@ -1112,6 +1150,12 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                         ),
                     )
                 ]
+
+            case "archive_tasks":
+                output = format_archive_report(
+                    archive_tasks(arguments["identifiers"])
+                )
+                return [TextContent(type="text", text=output)]
 
             case "move_task":
                 headline, from_section, to_section = move_task(

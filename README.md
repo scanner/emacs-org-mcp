@@ -186,16 +186,26 @@ uv run server.py --no-ediff-approval
 
 ## Available Tools
 
-### Task Tools (7)
+### Task Tools (10)
 
-| Tool           | Description                                                   |
-|----------------|---------------------------------------------------------------|
-| `list_tasks`   | List all tasks in a section (`Tasks` or `Completed Tasks`)    |
-| `get_task`     | Get a task by `:CUSTOM_ID:`, ticket ID, or headline substring |
-| `create_task`  | Create a new task from a complete org-formatted string        |
-| `update_task`  | Replace a task; auto-moves between sections on status change  |
-| `move_task`    | Move a task between sections without changing content         |
-| `search_tasks` | Search tasks by keyword across all sections                   |
+| Tool                     | Description                                                    |
+|--------------------------|----------------------------------------------------------------|
+| `list_tasks`             | List all tasks in a section (`Tasks` or `Completed Tasks`)     |
+| `get_task`               | Get a task by `:CUSTOM_ID:`, ticket ID, or headline substring  |
+| `create_task`            | Create a new task from a complete org-formatted string         |
+| `update_task`            | Replace a task; auto-moves between sections on status change   |
+| `move_task`              | Move a task between sections without changing content          |
+| `reorder_task`           | Move a task within its section — position is priority          |
+| `resort_completed_tasks` | One-off: sort the completed section newest-first by `:CLOSED:` |
+| `archive_tasks`          | Archive tasks out of `tasks.org` via org's `org-archive-subtree` |
+| `search_tasks`           | Search tasks by keyword across all sections                    |
+| `org_stats`              | Counts per section and project, in about ten lines             |
+
+`archive_tasks` is for work that is finished and recorded, or abandoned. Emacs
+does the move, so it needs a reachable `emacsclient` and has no fallback. Only
+archive tasks the user named or confirmed: if they describe a *class* of tasks,
+list the headlines and ask first. Archived tasks stay readable through
+`search_org`, marked `[archived]`, and nothing unarchives them.
 
 ### Journal Tools (5)
 

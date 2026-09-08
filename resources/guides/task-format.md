@@ -125,13 +125,92 @@ does not keep pointing at it.
 
 If no project matches, do not link — and do not invent a project.
 
+## Archiving Tasks
+
+`archive_tasks` moves tasks out of `tasks.org` by calling org's own
+`org-archive-subtree` in Emacs. The subtree lands in the archive file org is
+configured to use — `tasks.org_archive` by default — keeping its properties,
+including `:CUSTOM_ID:` and `:PROJECT:`.
+
+Archive work that is finished and recorded, or abandoned. A `tasks.org` that
+only ever grows makes every listing and search cost more, and old tasks crowd
+out the ones that matter.
+
+### Only archive what the user asked for
+
+Archiving is not reversible by any tool here, so the direction has to come
+from the user. Three cases:
+
+1. **The user named tasks** — "archive task-gh-28", "archive these three".
+   Archive them.
+2. **The user described a class of tasks** — "everything about the old
+   importer", "anything untouched since the spring". Find the candidates,
+   present them as a list of headlines, and **ask before calling**. Your
+   reading of the class may not be theirs, and the confirmation is where that
+   gets caught.
+3. **You think tasks look stale** — say which and why, and wait to be told.
+   Never archive on your own initiative. The signal is on every `list_tasks`
+   line already: position in the section, plus the `:MODIFIED:` age. Ask when
+   the active section has grown enough that reading it costs more than it
+   returns; `org_stats` is the cheap way to see that.
+
+### What the call does
+
+```json
+{"identifiers": ["task-gh-28", "GH-31", "the old importer rewrite"]}
+```
+
+Every identifier must name **exactly one** task. One that matches nothing, or
+matches two, refuses the whole call and names the candidates — so a confirmed
+list is never partly archived. Prefer `:CUSTOM_ID:`, which `list_tasks` shows
+on every line.
+
+The result names both ends for each task:
+
+```
+✓ Archived task-gh-28 -- GH-28 Add multi-provider support
+    to:          ~/org/tasks.org_archive
+    project:     repointed
+    checklist:   removed
+```
+
+- **project** — a linked project's `Related Tasks` line is rewritten to point
+  into the archive file, so the project keeps its record of the work.
+- **checklist** — the task's `High Level Tasks` line is removed. `not found`
+  means the checklist wording differs from the headline; remove it by hand if
+  it should go.
+
+Other behaviours worth knowing:
+
+- **No approval dialog.** The move is mechanical, like linking.
+- **A task with no `:CUSTOM_ID:` is given one first**, because Emacs is never
+  handed a headline to match on. It appears as its own commit.
+- **Idempotent.** Archiving something already archived reports that and
+  writes nothing, so a list that partly succeeded can just be run again.
+- **Emacs is required.** There is no fallback: org does the archiving. If
+  `emacsclient` cannot be reached, or the `tasks.org` buffer has unsaved
+  changes, the call fails and nothing moves.
+- **Batches stop at the first failure**, reporting what was archived before
+  it.
+
+### Finding archived work again
+
+There is no `unarchive` tool, and the typed task tools do not see archive
+files. `search_org` does — hits from an archive are marked `[archived]`,
+meaning the work is finished or abandoned:
+
+```json
+{"query": "old importer rewrite", "scope": "files"}
+```
+
 ## Automatic Behaviors
 
 - `TODO→DONE`: Moves to "Completed Tasks", sets `:CLOSED:`
 - `DONE→TODO`: Moves to "Tasks", clears `:CLOSED:`
 - `:MODIFIED:` updated on every change
-- Progress cookies `[/]` update automatically
-- High level checklist updated on create and status change
+- Progress cookies `[/]` are recounted by Emacs when you edit the list in
+  org-mode; the server preserves whatever the cookie says
+- High level checklist updated on create, status change, and archive
 
 ## Link Format
 
