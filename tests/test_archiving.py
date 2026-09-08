@@ -155,6 +155,11 @@ def emacs(mocker: MockerFixture) -> Callable[..., None]:
 
         mocker.patch("mcp_server.archiving.run_org_archive", side_effect=_fake)
 
+        # The readiness question is asked of the same Emacs, so a fake move
+        # implies a fake answer to it. Tests that want it to refuse patch it
+        # themselves.
+        mocker.patch("mcp_server.archiving.ensure_emacs_ready")
+
     _install()
     return _install
 
@@ -780,6 +785,44 @@ class TestTheEmacsCall:
         assert report.failure is not None
         assert "running Emacs" in report.failure
         assert sample_tasks_file["path"].read_text() == before
+
+    def test_an_unsaved_buffer_stops_the_call_before_anything_is_written(
+        self, temp_org_dir: Path, mocker: MockerFixture
+    ):
+        """
+        GIVEN: A task with no :CUSTOM_ID:, in a tasks.org whose Emacs buffer
+               holds unsaved changes
+         WHEN: It is archived
+         THEN: The call fails and tasks.org is byte-for-byte untouched -- no
+               :CUSTOM_ID: is written to it, because archiving asks Emacs
+               whether the file is safe before it writes rather than after
+          AND: The failure carries Emacs' own words, which say what to do
+
+        A refusal discovered after the write would leave a property addition,
+        and its commit, for a task that never moved -- in a file whose buffer
+        would clobber that addition the moment the user saved it.
+        """
+        tasks_file = temp_org_dir / "tasks.org"
+        tasks_file.write_text(
+            "* Tasks\n\n** TODO A task with no id\n\n* Completed Tasks\n"
+        )
+        before = tasks_file.read_text()
+
+        mocker.patch(
+            "mcp_server.archiving.ensure_emacs_ready",
+            side_effect=ArchiveError(
+                "Emacs refused while checking tasks.org: Buffer tasks.org has "
+                "unsaved changes: save or revert it, then archive"
+            ),
+        )
+        archived = mocker.patch("mcp_server.archiving.run_org_archive")
+
+        report = archive_tasks(["A task with no id"])
+
+        assert report.failure is not None
+        assert "unsaved changes" in report.failure
+        assert tasks_file.read_text() == before
+        archived.assert_not_called()
 
     def test_an_error_from_emacs_is_passed_on(
         self, temp_org_dir: Path, mocker: MockerFixture

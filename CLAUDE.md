@@ -499,6 +499,15 @@ what happens next and are reported: a location outside `SEARCH_ROOTS` is
 unreachable by `search_org`, and one not named `<name>_archive` will not be
 marked `[archived]`.
 
+**Emacs is asked before anything is written.** Archiving may have to write
+a `:CUSTOM_ID:` first, and a file whose buffer holds unsaved edits must not be
+written at all — so `ensure_emacs_ready()` puts the buffer question up front
+rather than letting it surface when the archive itself is refused. Asking
+afterwards left a property addition, and its commit, for a task that never
+moved, in a file whose buffer would clobber it on the user's next save. The
+archive checks again when it runs: the calls are seconds apart, but the buffer
+belongs to somebody who is typing in it.
+
 **Resolution is all-or-nothing; archiving is one at a time.** An identifier
 matching nothing or matching two refuses the whole call and names the
 candidates — what the user confirmed was a list, and archiving the subset that

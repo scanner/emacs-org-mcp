@@ -26,19 +26,42 @@
 (require 'org)
 (require 'org-archive)
 
+(defun org-mcp-archive--assert-unmodified (file)
+  "Signal an error if a buffer visiting FILE holds unsaved changes.
+
+Those edits are the user's, and only they can decide what becomes of them.
+Refusing is the whole answer: this must not revert them, and the server
+must not write the file underneath them."
+  (let ((buffer (find-buffer-visiting file)))
+    (when (and buffer (buffer-modified-p buffer))
+      (error "Buffer %s has unsaved changes: save or revert it, then archive"
+             (buffer-name buffer)))))
+
+(defun org-mcp-archive-ready (file)
+  "Report that FILE can be archived from, having changed nothing.
+
+Signals exactly what `org-mcp-archive-subtree' would signal, so the server
+can ask before it writes rather than after.  It has writing to do first: a
+task with no :CUSTOM_ID: is given one, and writing that to a file Emacs
+holds unsaved edits for means one of the two is lost -- the property when
+the user saves their buffer over it, or their edits if they reload.
+
+Returns t when the file is safe to touch."
+  (org-mcp-archive--assert-unmodified file)
+  t)
+
 (defun org-mcp-archive--visit (file)
   "Return a buffer visiting FILE, in `org-mode', without ever prompting.
 
-A buffer holding unsaved changes signals an error instead: those edits are
-the user's and only they can decide what becomes of them.  A buffer whose
-file changed underneath it is reverted first -- the server writes tasks.org
-between Emacs' visits, and `find-file-noselect' would otherwise stop to ask
-about the mismatch."
+A buffer holding unsaved changes signals an error, as it does in
+`org-mcp-archive-ready'; the check is repeated here because the buffer may
+have been touched between the two calls.  A buffer whose file changed
+underneath it is reverted first -- the server writes tasks.org between
+Emacs' visits, and `find-file-noselect' would otherwise stop to ask about
+the mismatch."
+  (org-mcp-archive--assert-unmodified file)
   (let ((buffer (find-buffer-visiting file)))
     (when buffer
-      (when (buffer-modified-p buffer)
-        (error "Buffer %s has unsaved changes: save or revert it, then archive"
-               (buffer-name buffer)))
       (unless (verify-visited-file-modtime buffer)
         (with-current-buffer buffer
           (revert-buffer t t t))))

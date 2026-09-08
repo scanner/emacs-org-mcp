@@ -35,6 +35,11 @@ rather than whether Emacs is reachable.
 **Prefer a duplicate to a hole.** If verification fails, tasks.org is restored
 from its pre-image and the archived copy is left where org put it. A task in
 two places is recoverable by hand; a task in none is not.
+
+**Emacs is asked before anything is written.** Archiving may have to write a
+``:CUSTOM_ID:`` first, and a file whose buffer holds unsaved edits must not be
+written at all -- so the buffer question is asked up front rather than
+discovered when the archive itself is refused.
 """
 
 # system imports
@@ -519,6 +524,38 @@ def _validate_custom_id(custom_id: str) -> None:
 
 ###############################################################################
 #
+def ensure_emacs_ready(tasks_file: Path) -> None:
+    """
+    Ask Emacs whether the tasks file can be archived from, before writing.
+
+    Args:
+        tasks_file: The org file about to be archived from
+
+    Raises:
+        ArchiveError: If Emacs cannot be reached, the elisp cannot be loaded,
+            or a buffer visiting the file holds unsaved changes.
+
+    Note:
+        Asked *before* anything is written, which is the whole point of it
+        being a separate call. Archiving has writing to do first -- a task
+        with no ``:CUSTOM_ID:`` is given one, through the guarded path, and
+        that commits. Doing it and then discovering Emacs will not archive
+        leaves a property addition for a task that never moved, written into
+        a file whose buffer holds edits that would clobber it on the user's
+        next save.
+
+        ``org-mcp-archive-subtree`` checks again when it runs: the two calls
+        are seconds apart, but the buffer belongs to somebody who is typing
+        in it.
+    """
+    _emacs_eval(
+        f"(org-mcp-archive-ready {quote_elisp(str(tasks_file))})",
+        doing=f"checking {tasks_file.name}",
+    )
+
+
+###############################################################################
+#
 def run_org_archive(tasks_file: Path, custom_id: str) -> Path:
     """
     Have Emacs archive one task, and report where it went.
@@ -540,6 +577,39 @@ def run_org_archive(tasks_file: Path, custom_id: str) -> Path:
         heading; this function is the only part that needs a live Emacs, and
         the manual test script is what exercises it.
     """
+    answer = _emacs_eval(
+        f"(org-mcp-archive-subtree {quote_elisp(str(tasks_file))} "
+        f"{quote_elisp(custom_id)})",
+        doing=f"archiving '{custom_id}'",
+    )
+
+    return _parse_archive_path(answer, custom_id)
+
+
+###############################################################################
+#
+def _emacs_eval(form: str, doing: str) -> str:
+    """
+    Evaluate one form in the running Emacs and return what it printed.
+
+    Args:
+        form: The elisp to evaluate, with every value already quoted
+        doing: What this call is for, in the words an error should use,
+            e.g. ``archiving 'task-gh-28'``
+
+    Returns:
+        Emacs' answer, stripped.
+
+    Raises:
+        ArchiveError: If Emacs cannot be reached, the elisp cannot be loaded,
+            Emacs does not answer in time, or it signals an error.
+
+    Note:
+        Both calls to Emacs come through here, so a missing emacsclient reads
+        the same whichever one hit it. An elisp ``error`` arrives as a
+        non-zero exit with the message on stderr, and that message is written
+        to be read by a person, so it is passed on rather than replaced.
+    """
     emacsclient = get_emacsclient_path()
     if emacsclient is None:
         raise ArchiveError(
@@ -555,11 +625,6 @@ def run_org_archive(tasks_file: Path, custom_id: str) -> Path:
             f"do the archiving. Nothing was changed."
         )
 
-    form = (
-        f"(org-mcp-archive-subtree {quote_elisp(str(tasks_file))} "
-        f"{quote_elisp(custom_id)})"
-    )
-
     try:
         completed = subprocess.run(
             [emacsclient, "--eval", form],
@@ -569,24 +634,21 @@ def run_org_archive(tasks_file: Path, custom_id: str) -> Path:
         )
     except subprocess.TimeoutExpired as error:
         raise ArchiveError(
-            f"Emacs did not answer within {ARCHIVE_TIMEOUT}s while archiving "
-            f"'{custom_id}'. It may be waiting on something in the "
-            f"minibuffer. Check Emacs, then check whether the task moved "
-            f"before archiving it again."
+            f"Emacs did not answer within {ARCHIVE_TIMEOUT}s while {doing}. "
+            f"It may be waiting on something in the minibuffer. Check Emacs, "
+            f"then check whether the task moved before archiving it again."
         ) from error
 
     answer = (completed.stdout or "").strip()
     complaint = (completed.stderr or "").strip() or answer
 
-    # An `error' in the elisp reaches us as a non-zero exit with the message
-    # on stderr, so its own wording is the most useful thing to pass on.
     if completed.returncode != 0 or answer.startswith("*ERROR*"):
         raise ArchiveError(
-            f"Emacs refused to archive '{custom_id}': "
+            f"Emacs refused while {doing}: "
             f"{complaint.removeprefix('*ERROR*:').strip()}"
         )
 
-    return _parse_archive_path(answer, custom_id)
+    return answer
 
 
 ###############################################################################
@@ -1031,8 +1093,16 @@ def archive_task(task: Task) -> ArchiveResult:
         ArchiveError: If Emacs would not do it, or if the result does not
             verify -- in which case tasks.org has been restored.
     """
-    task, assigned = ensure_custom_id(task)
     tasks_file = global_state.config.tasks_file
+
+    # Before anything is written. Giving a task a :CUSTOM_ID: is itself a
+    # write to this file, so asking Emacs afterwards would be asking too late:
+    # a refusal would already have left a property addition for a task that
+    # never moved, in a file whose buffer holds edits that clobber it on the
+    # next save.
+    ensure_emacs_ready(tasks_file)
+
+    task, assigned = ensure_custom_id(task)
 
     before = tasks_file.read_text(encoding="utf-8")
 
