@@ -29,10 +29,10 @@ from mcp_server.utils import (
 
 @pytest.fixture(autouse=True)
 def reset_elisp_loaded():
-    """Reset the global _elisp_loaded state before each test."""
-    global_state.elisp_loaded = False
+    """Forget which elisp files have been loaded, before and after each test."""
+    global_state.elisp_loaded = set()
     yield
-    global_state.elisp_loaded = False
+    global_state.elisp_loaded = set()
 
 
 ###############################################################################
@@ -184,7 +184,7 @@ class TestEnsureElispLoaded:
         ensure_elisp_loaded()
 
         assert mock_run.called
-        assert global_state.elisp_loaded is True
+        assert "emacs_ediff.el" in global_state.elisp_loaded
 
     def test_skips_loading_on_subsequent_calls(
         self,
@@ -201,7 +201,7 @@ class TestEnsureElispLoaded:
         fake_client.write_text("fake")
         config_factory(Config(emacsclient_path=fake_client))
 
-        global_state.elisp_loaded = True
+        global_state.elisp_loaded = {"emacs_ediff.el"}
         mock_run = mocker.patch("subprocess.run")
 
         ensure_elisp_loaded()
@@ -225,7 +225,7 @@ class TestEnsureElispLoaded:
 
         ensure_elisp_loaded()
 
-        assert global_state.elisp_loaded is False
+        assert global_state.elisp_loaded == set()
 
     def test_handles_subprocess_error(
         self,
@@ -256,7 +256,7 @@ class TestEnsureElispLoaded:
 
         ensure_elisp_loaded()
 
-        assert global_state.elisp_loaded is False
+        assert global_state.elisp_loaded == set()
 
 
 ###############################################################################

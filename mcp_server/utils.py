@@ -1,5 +1,10 @@
 """
-Shared utilities: timestamps, file I/O, diff, and ediff approval integration.
+Shared utilities: timestamps, file I/O, diff, and the Emacs bridge.
+
+The Emacs side is shared: :func:`ensure_elisp_loaded` loads whichever of the
+server's elisp files an operation needs, and :func:`quote_elisp` renders the
+values they are called with. Ediff approval lives here; archiving uses the
+same bridge from :mod:`mcp_server.archiving`.
 """
 
 # system imports
@@ -302,36 +307,77 @@ def is_ediff_approval_enabled() -> bool:
 
 ###############################################################################
 #
-def ensure_elisp_loaded(force: bool = False) -> None:
+def quote_elisp(value: str) -> str:
     """
-    Load emacs_ediff.el if not already loaded.
+    Render a Python string as an elisp string literal.
 
     Args:
-        force: If True, reload even if already loaded (useful for development)
+        value: The text to quote
+
+    Returns:
+        The value wrapped in double quotes, with backslashes and quotes
+        escaped so it reads back as this exact string.
+
+    Note:
+        Everything the server sends to ``emacsclient --eval`` is elisp source
+        that Emacs then evaluates, so an unescaped quote in a value does not
+        produce a bad argument -- it produces different code. Interpolating
+        through this is what keeps a value a value.
     """
-    if global_state.elisp_loaded and not force:
-        return
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+###############################################################################
+#
+def ensure_elisp_loaded(
+    name: str = "emacs_ediff.el", force: bool = False
+) -> bool:
+    """
+    Load one of the server's elisp files into Emacs, once.
+
+    Args:
+        name: File name beside the server package, e.g. ``emacs_archive.el``
+        force: Load again even if this file has already been loaded, which is
+            what the manual test scripts use while the elisp is being edited
+
+    Returns:
+        True when the file is loaded and its functions are callable.
+
+    Note:
+        Loading is per file. The ediff bridge and the archive bridge are
+        wanted by different operations, so one being present says nothing
+        about the other.
+    """
+    if name in global_state.elisp_loaded and not force:
+        return True
 
     emacsclient = get_emacsclient_path()
     if not emacsclient:
-        return
+        return False
 
-    elisp_path = Path(__file__).parent.parent / "emacs_ediff.el"
+    elisp_path = Path(__file__).parent.parent / name
     if not elisp_path.exists():
-        logger.warning("emacs_ediff.el not found at %s", elisp_path)
-        return
+        logger.warning("%s not found at %s", name, elisp_path)
+        return False
 
     try:
         subprocess.run(
-            [emacsclient, "--eval", f'(load-file "{elisp_path}")'],
+            [
+                emacsclient,
+                "--eval",
+                f"(load-file {quote_elisp(str(elisp_path))})",
+            ],
             capture_output=True,
             check=True,
             timeout=5,
         )
-        global_state.elisp_loaded = True
-        logger.info("Loaded emacs_ediff.el")
+        global_state.elisp_loaded.add(name)
+        logger.info("Loaded %s", name)
+        return True
     except Exception as e:
-        logger.warning("Failed to load emacs_ediff.el: %r", e)
+        logger.warning("Failed to load %s: %r", name, e)
+        return False
 
 
 ###############################################################################
@@ -383,7 +429,8 @@ def request_ediff_approval(
                 [
                     emacsclient,
                     "--eval",
-                    f'(org-mcp-ediff-approve "{old_file}" "{new_file}")',
+                    f"(org-mcp-ediff-approve {quote_elisp(str(old_file))} "
+                    f"{quote_elisp(str(new_file))})",
                 ],
                 capture_output=True,
                 text=True,

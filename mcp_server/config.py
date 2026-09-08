@@ -93,7 +93,12 @@ class GlobalState:
     """
 
     config: Config = field(default_factory=Config)
-    elisp_loaded: bool = False
+
+    # Which of the server's elisp files this Emacs has been given, by name.
+    # A set rather than a flag because the files are loaded on demand: the
+    # ediff bridge and the archive bridge are needed by different operations
+    # and one being loaded says nothing about the other.
+    elisp_loaded: set[str] = field(default_factory=set)
 
 
 # Configuration field types for type conversion

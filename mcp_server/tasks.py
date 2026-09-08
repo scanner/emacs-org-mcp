@@ -712,6 +712,62 @@ def find_task(
 
 ###############################################################################
 #
+def find_task_candidates(identifier: str) -> list[Task]:
+    """
+    List every task an identifier could mean.
+
+    Args:
+        identifier: ``:CUSTOM_ID:``, a bare id without the ``task-`` prefix,
+            ticket ID, or a substring of the headline
+
+    Returns:
+        The matching tasks across both sections, in file order. Empty when
+        nothing matches.
+
+    Note:
+        :func:`find_task` returns the first match, which is the right answer
+        for reading a task and the wrong one for a write that removes it: a
+        substring naming two tasks would archive whichever came first and
+        report success. Callers that must not guess ask for every candidate
+        and refuse when there is more than one.
+    """
+    org = get_org()
+    config = global_state.config
+
+    return [
+        task
+        for section_name in (config.active_section, config.completed_section)
+        for task in parse_tasks_in_section(
+            find_section(org, section_name), section_name
+        )
+        if _task_matches(task, identifier)
+    ]
+
+
+###############################################################################
+#
+def _task_matches(task: Task, identifier: str) -> bool:
+    """
+    Report whether an identifier names a task, as :func:`find_task` matches.
+
+    Args:
+        task: The task to test
+        identifier: The identifier to test it against
+
+    Returns:
+        True when that identifier would resolve to this task.
+    """
+    wanted = identifier.strip().lower()
+
+    return (
+        task.custom_id == identifier
+        or task.custom_id == f"task-{wanted}"
+        or wanted in task.headline.lower()
+    )
+
+
+###############################################################################
+#
 def task_field(task: Task, field_name: str) -> str | None:
     """
     Read one filterable field off a task.
@@ -981,6 +1037,59 @@ def update_high_level_task(org: Org, description: str, completed: bool) -> None:
             break
 
     high_level_section.body = "\n".join(lines)
+
+
+###############################################################################
+#
+def remove_high_level_task(file_content: str, description: str) -> str | None:
+    """
+    Drop a task's item from the High Level Tasks checklist, in raw text.
+
+    Args:
+        file_content: Full text of a tasks.org file
+        description: Task description to find in the checklist
+
+    Returns:
+        The file with that item removed, or None when the checklist has no
+        line for this description -- which callers report rather than swallow,
+        since a checklist worded differently from its task is a silent no-op.
+
+    Note:
+        Text rather than orgmunge, unlike the add and update beside it. Those
+        run inside ``create_task`` and ``update_task``, which are already
+        rewriting the file through the parser; this one is called by archiving,
+        where nothing else about the file changes. Rendering the whole file
+        through orgmunge to delete one line would drop every blank line
+        between sections along with it, turning a one-line edit into a diff
+        over the entire file.
+
+        A line matches only if it is a checkbox item for exactly this
+        description, which is the shape ``add_high_level_task`` writes, and
+        only inside the checklist section: a task's own ``Task items`` may
+        hold a line worded the same way, and that one belongs to the task.
+    """
+    wanted = (f"- [ ] {description}", f"- [X] {description}")
+    section = re.compile(
+        rf"^\*[ \t]+{re.escape(global_state.config.high_level_section)}"
+        rf"(?:[ \t]+\[\d*/\d*\])?[ \t]*$"
+    )
+
+    lines = file_content.split("\n")
+    kept: list[str] = []
+    inside = False
+    removed = False
+
+    for line in lines:
+        if line.startswith("* "):
+            inside = bool(section.match(line))
+
+        if inside and line.strip() in wanted:
+            removed = True
+            continue
+
+        kept.append(line)
+
+    return "\n".join(kept) if removed else None
 
 
 # =============================================================================
