@@ -367,6 +367,54 @@ class TestArchivingATask:
             result.archive_file.read_text()
         )
 
+    @pytest.mark.parametrize(
+        "headline,expected",
+        [
+            (
+                "Spike: SQL+Rego+Data POC in posture_rules",
+                "task-spike-sql-rego-data-poc",
+            ),
+            (
+                "Move the ingest worker to the new queue",
+                "task-move-the-ingest-worker",
+            ),
+            ("Retire the shim", "task-retire-the-shim"),
+            ("In and of the", "task-in"),
+        ],
+        ids=[
+            "stops-before-in",
+            "stops-before-to-the",
+            "keeps-inner",
+            "all-stopwords",
+        ],
+    )
+    def test_a_minted_id_does_not_end_mid_phrase(
+        self,
+        temp_org_dir: Path,
+        emacs: Callable[..., None],
+        headline: str,
+        expected: str,
+    ):
+        """
+        GIVEN: A task with no :CUSTOM_ID: whose headline runs longer than an
+               id should
+         WHEN: It is archived and an id is minted from the headline
+         THEN: The id is the leading words of the headline, stopping short of
+               a trailing preposition or article, so it reads as a phrase
+               rather than as a sentence cut off mid-way
+          AND: One of those words inside the phrase is kept, since there it is
+               part of what the task is called
+          AND: A headline that is nothing but such words still yields an id,
+               since every task must have one
+        """
+        (temp_org_dir / "tasks.org").write_text(
+            f"* Tasks\n\n** TODO {headline}\n\n* Completed Tasks\n"
+        )
+
+        report = archive_tasks([headline])
+
+        assert report.archived[0].task_id == expected
+
     def test_the_high_level_checklist_item_goes_with_it(
         self, sample_tasks_file: TasksFileInfo, emacs: Callable[..., None]
     ):

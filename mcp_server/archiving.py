@@ -99,6 +99,43 @@ CUSTOM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # per line, so it cannot match across a heading.
 CUSTOM_ID_LINE = r"^[ \t]*:CUSTOM_ID:[ \t]*{}[ \t]*$"
 
+# Words a minted id should not end on. Taking the first few words of a headline
+# regularly stops mid-phrase, and an id ending in a preposition reads as though
+# it were truncated -- "...-poc-in" against a headline that continued. Only the
+# trailing words are dropped: one of these in the middle is part of the phrase.
+TRAILING_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "but",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "onto",
+        "or",
+        "over",
+        "that",
+        "the",
+        "this",
+        "to",
+        "under",
+        "with",
+        "without",
+    }
+)
+
 
 # =============================================================================
 # Errors
@@ -418,9 +455,11 @@ def _mint_custom_id(headline: str) -> str:
 
     Note:
         Follows the guide's ``task-<identifier>`` shape, taking the leading
-        words of the headline so the id says which task it names. A collision
-        gets a numeric suffix rather than being silently reused, since two
-        tasks sharing an id would make both unfindable.
+        words of the headline so the id says which task it names, and
+        stopping short of a trailing preposition so it reads as a phrase
+        rather than a truncation. A collision gets a numeric suffix rather
+        than being silently reused, since two tasks sharing an id would make
+        both unfindable.
 
         The archives are checked alongside tasks.org, because the archive is
         where this task is heading: an id already used by something archived
@@ -429,6 +468,10 @@ def _mint_custom_id(headline: str) -> str:
     """
     description = extract_task_description(headline).lower()
     words = re.findall(r"[a-z0-9]+", description)[:6]
+
+    while len(words) > 1 and words[-1] in TRAILING_STOPWORDS:
+        words.pop()
+
     base = "-".join(words) or "task"
 
     existing = set(
