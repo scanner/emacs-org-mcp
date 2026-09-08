@@ -345,8 +345,9 @@ This task has no properties drawer at all.
         found = find_task("Task without properties", section="Tasks")
         assert found is not None
         task, _, _, _ = found
-        # Task should still have no custom_id since it had no properties
-        assert task.custom_id is None or task.custom_id == ""
+        # An absent property reads as empty, never None: Task declares
+        # these `str` and find_task coerces at that boundary.
+        assert task.custom_id == ""
 
     def test_move_task_missing_closed_property(
         self, sample_tasks_file: TasksFileInfo
@@ -392,8 +393,9 @@ This task is DONE but has no CLOSED timestamp.
         assert found is not None
         task, _, _, _ = found
         assert task.custom_id == "task-no-closed"
-        # Note: move_task doesn't clear :CLOSED:, so if it didn't have one, it still won't
-        assert task.closed is None or task.closed == ""
+        # move_task doesn't clear :CLOSED:, so one that never had it
+        # still doesn't.
+        assert task.closed == ""
 
     def test_move_nonexistent_task_raises(
         self, sample_tasks_file: TasksFileInfo
@@ -989,7 +991,7 @@ This task is DONE but has no CLOSED timestamp.
         assert result is not None
         task, _, _, _ = result
         assert task.status == "DONE"
-        assert task.closed is None or task.closed == ""
+        assert task.closed == ""
 
         # Now reopen it to TODO - should not raise an error
         reopened_task = make_task(
@@ -1004,7 +1006,7 @@ This task is DONE but has no CLOSED timestamp.
         assert result is not None
         task, _, _, _ = result
         assert task.status == "TODO"
-        assert task.closed is None or task.closed == ""
+        assert task.closed == ""
         # Should have :MODIFIED: timestamp
         assert task.modified != ""
 
