@@ -371,14 +371,18 @@ def unlink_task_from_project(
     task, _, _, _ = find_task(task_identifier)
 
     existing = project.sections.get(RELATED_TASKS, "")
-    anchor = link_anchor_re(task.custom_id)
-    kept = [
-        line
-        for line in existing.split("\n")
-        if line.strip() and not anchor.search(line)
-    ]
+    lines = [line for line in existing.split("\n") if line.strip()]
 
-    if len(kept) == len([ln for ln in existing.split("\n") if ln.strip()]):
+    # A link is made *by* the :CUSTOM_ID: anchor, so a task that has none
+    # cannot be listed in any project. There is nothing to search for and
+    # nothing to remove -- and minting an id to go looking would be a write
+    # nobody asked for, on the one call whose purpose is to undo a write.
+    kept = lines
+    if task.custom_id:
+        anchor = link_anchor_re(task.custom_id)
+        kept = [line for line in lines if not anchor.search(line)]
+
+    if len(kept) == len(lines):
         project_end = "unchanged"
     else:
         _write_related_tasks(

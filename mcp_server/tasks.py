@@ -757,16 +757,22 @@ def find_task(
                 matches = False
 
             if matches:
+                # `_properties` reports an absent property as None, which
+                # is what keeps it from being written back. Task declares
+                # these `str`, so the None stops here rather than reaching a
+                # caller that trusts the annotation -- `re.escape(None)` in
+                # link_anchor_re raised a TypeError on any task without an id.
+                #
                 task = Task(
-                    custom_id=properties.CUSTOM_ID,
+                    custom_id=properties.CUSTOM_ID or "",
                     headline=headline_text,
                     status=todo_state,
                     section=sec_name,
                     content=heading_to_org_string(heading),
-                    id=properties.ID,
-                    created=properties.CREATED,
-                    modified=properties.MODIFIED,
-                    closed=properties.CLOSED,
+                    id=properties.ID or "",
+                    created=properties.CREATED or "",
+                    modified=properties.MODIFIED or "",
+                    closed=properties.CLOSED or "",
                     project=properties.PROJECT or "",
                     properties=dict(getattr(heading, "properties", {}) or {}),
                 )

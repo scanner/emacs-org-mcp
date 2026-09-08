@@ -892,7 +892,7 @@ class TestTaskTimestamps:
         result = find_task("task-jira-1234")
         assert result is not None
         task, _, _, _ = result
-        assert task.closed is not None
+        assert task.closed
 
         # Now reopen it
         #
@@ -909,9 +909,12 @@ class TestTaskTimestamps:
         assert result is not None
         task, _, _, _ = result
 
-        # And the task.close == None
+        # Task declares every timestamp `str`, so an absent one reads as
+        # empty. The drawer is the observable that matters: the property is
+        # gone from the file, not merely blank on the parsed task.
         #
-        assert task.closed is None
+        assert task.closed == ""
+        assert "CLOSED" not in task.properties
 
     def test_update_done_task_sets_modified_but_not_closed(
         self, sample_tasks_file: TasksFileInfo
