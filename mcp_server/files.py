@@ -35,6 +35,7 @@ only cover the parts, so a search for the subject should find it.
 
 # system imports
 import os
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -56,6 +57,12 @@ from mcp_server.validation import HEADING_RE, scan_block_state
 ARCHIVE_SUFFIX = "_archive"
 
 ORG_SUFFIX = ".org"
+
+# A :CUSTOM_ID: line in an archive file. Line-anchored, because org
+# decides every construct by the line it sits on.
+ARCHIVED_ID_RE = re.compile(
+    r"^[ \t]*:CUSTOM_ID:[ \t]*(\S+)[ \t]*$", re.MULTILINE
+)
 
 # Files that live beside org files without being content: our own backups,
 # Emacs tilde backups, and Emacs lock and autosave files. A long-lived org
@@ -285,6 +292,77 @@ def read_org_file(path: Path) -> str | None:
     except (OSError, UnicodeDecodeError) as exc:
         logger.debug("search: skipping %s, %s", path, exc)
         return None
+
+
+###############################################################################
+#
+def load_archives() -> list[tuple[Path, str]]:
+    """
+    Read every archive file under the search roots.
+
+    Returns:
+        Each archive file and its text.
+
+    Note:
+        Archives are recognised by org's ``<name>_archive`` convention, the
+        same way this module recognises them for searching, so this works for
+        whatever files an installation has rather than for one named file.
+        Read once per call: an identifier that resolves to a live task never
+        needs them at all, and a batch of twenty that do not should not walk
+        the roots twenty times.
+    """
+    archives: list[tuple[Path, str]] = []
+
+    for path in walk_org_files(global_state.config.search_roots):
+        if not path.name.endswith(ARCHIVE_SUFFIX):
+            continue
+
+        text = read_org_file(path)
+        if text is None:
+            # read_org_file skips an oversized or non-UTF-8 file at debug
+            # level, which is right for one file among thousands in a search.
+            # An archive is not one among thousands: it is where the ids of
+            # every departed task live, so a skipped one means minting hands
+            # out an id that is already taken.
+            #
+            logger.warning(
+                "Could not read the archive %s, so the ids it holds are not "
+                "counted as taken",
+                path,
+            )
+            continue
+
+        archives.append((path, text))
+
+    return archives
+
+
+###############################################################################
+#
+def archived_ids() -> set[str]:
+    """
+    List the ``:CUSTOM_ID:`` values the archives already hold.
+
+    Returns:
+        Every id found in an archive file under the search roots.
+
+    Note:
+        An id has to be unique across every file it can travel to, and a task
+        archived last year is no longer in tasks.org while its id is still
+        spoken for. Minting consults this, which is why it lives here rather
+        than in the archiving module: `tasks.py` needs it and must not depend
+        on the operation that produces archives.
+
+        The value pattern is deliberately loose. Whatever an archive holds is
+        taken, whether or not this server would have minted it that way, and
+        an id read here is only ever compared -- `validate_custom_id` governs
+        the ones written.
+    """
+    return {
+        match.group(1)
+        for _, text in load_archives()
+        for match in ARCHIVED_ID_RE.finditer(text)
+    }
 
 
 # =============================================================================

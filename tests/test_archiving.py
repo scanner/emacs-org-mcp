@@ -916,8 +916,9 @@ class TestTheEmacsCall:
         """
         GIVEN: A task whose :CUSTOM_ID: is not the shape this server writes
          WHEN: It is archived
-         THEN: The call is refused, because the id is passed to Emacs as
-               elisp source and only a narrow shape can be sent safely
+         THEN: The call is refused before Emacs is involved, since the id
+               would be interpolated into elisp source and only a narrow
+               shape can be sent safely
         """
         (temp_org_dir / "tasks.org").write_text(
             "* Tasks\n\n"
@@ -931,7 +932,7 @@ class TestTheEmacsCall:
         report = archive_tasks(["Suspicious task"])
 
         assert report.failure is not None
-        assert "not the shape this server writes" in report.failure
+        assert "not a usable :CUSTOM_ID:" in report.failure
 
     @pytest.mark.parametrize(
         "value,expected",

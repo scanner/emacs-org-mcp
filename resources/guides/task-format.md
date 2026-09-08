@@ -60,12 +60,41 @@ syntax inside a block and the server comma-escapes it for you:
 
 ## Properties
 
-- `:CUSTOM_ID:` — Required. Use `task-<ticket-id>` format (e.g., `task-gh-123`)
+- `:CUSTOM_ID:` — Required, and minted from the headline if you omit it, so
+  every task has one. Give it yourself when you want it to say something
+  particular; it appears in the ediff before the task lands, so you can
+  change it there. Letters, digits, dots, dashes and underscores only — it
+  goes into link anchors and is passed to Emacs when archiving.
 - `:ID:` — Auto-generated UUID if omitted
 - `:CREATED:`, `:MODIFIED:`, `:CLOSED:` — Auto-managed timestamps
 - `:PROJECT:` — The project's `:CUSTOM_ID:` (e.g., `project-booklore`).
   Written by `link_task_to_project`, not by hand. See "Linking Tasks to
   Projects" below.
+
+## Every Task Has an Id
+
+`:CUSTOM_ID:` is what every other tool addresses a task by: a project links to
+it, a search result hands it back as the reference for your next call, and
+archiving needs it as a locator. So it is an invariant rather than a
+precondition of any one operation — a task has an id, given when it is created
+and repaired wherever one is found missing:
+
+| when | what happens |
+|------|--------------|
+| `create_task` with no `:CUSTOM_ID:` | one is minted from the headline, before the ediff |
+| `link_task_to_project` on a task with none | one is minted, as its own commit, then the link is made |
+| `archive_tasks` on a task with none | one is minted, as its own commit, then the task is archived |
+| `update_task` omitting it | the existing one is preserved |
+
+A minted id is `task-` plus the leading words of the headline, stopping short
+of a trailing preposition so it reads as a phrase. Org links are reduced to
+their text and ticket ids dropped before the words are taken — a ticket
+routinely covers several tasks, so it does not identify one, and a headline
+carrying its ticket as a link would otherwise slug the URL. A collision gets a
+numeric suffix, checked against `tasks.org` and against the archives.
+
+Tasks written before this still have no id; they get one the first time they
+are linked or archived. Nothing rewrites them in bulk.
 
 ## Finding Tasks
 
@@ -184,7 +213,8 @@ Other behaviours worth knowing:
 
 - **No approval dialog.** The move is mechanical, like linking.
 - **A task with no `:CUSTOM_ID:` is given one first**, because Emacs is never
-  handed a headline to match on. It appears as its own commit.
+  handed a headline to match on. It appears as its own commit. See
+  "Every Task Has an Id" below.
 - **Idempotent.** Archiving something already archived reports that and
   writes nothing, so a list that partly succeeded can just be run again.
 - **Emacs is required.** There is no fallback: org does the archiving. If

@@ -162,6 +162,38 @@ class TestLinking:
 
         assert not result.changed
 
+    ####################################################################
+    #
+    def test_unlinking_a_task_without_a_custom_id_writes_nothing(
+        self, task_and_project: Path
+    ):
+        """
+        GIVEN: a task with no :CUSTOM_ID:, as tasks predating the convention
+               have, and a project it was never linked to
+        WHEN:  they are unlinked
+        THEN:  both ends report as already correct and neither file is written
+
+        A link is made by the :CUSTOM_ID: anchor, so a task without one cannot
+        be listed in any project and there is nothing to remove. Minting an id
+        to go looking for it would be a write on the one call whose purpose is
+        to undo a write -- and reaching the anchor search with no id at all
+        raised a TypeError out of re.escape.
+        """
+        (task_and_project / "tasks.org").write_text(
+            make_tasks_org(["** TODO Anonymous task"], [])
+        )
+        tasks_before = (task_and_project / "tasks.org").read_text()
+        project_before = project_text(task_and_project)
+
+        result = unlink_task_from_project("Anonymous", "widgets")
+
+        with check:
+            assert not result.changed
+        with check:
+            assert (task_and_project / "tasks.org").read_text() == tasks_before
+        with check:
+            assert project_text(task_and_project) == project_before
+
 
 ########################################################################
 ########################################################################
@@ -232,20 +264,31 @@ class TestFormatIsEnforced:
 
     ####################################################################
     #
-    def test_a_task_without_a_custom_id_cannot_be_linked(
+    def test_a_task_without_a_custom_id_is_given_one_and_linked(
         self, task_and_project: Path
     ):
         """
-        GIVEN: a task with no :CUSTOM_ID:
+        GIVEN: a task with no :CUSTOM_ID:, as tasks predating the convention
+               have
         WHEN:  it is linked to a project
-        THEN:  it is refused, explaining that there is nothing to link to
+        THEN:  it is given an id minted from its headline, and the link is
+               made by that id at both ends
 
-        The link is an anchor to the CUSTOM_ID, so without one there is no
-        link to write -- better to say so than to write a broken anchor.
+        The link is an anchor to the CUSTOM_ID, so one is required. Refusing
+        asked the user to go and write by hand exactly what this writes
+        anyway -- and it fired on the oldest tasks, which are the ones most
+        likely to be filed under a project for the first time.
         """
         (task_and_project / "tasks.org").write_text(
             make_tasks_org(["** TODO Anonymous task"], [])
         )
 
-        with pytest.raises(ValueError, match="no :CUSTOM_ID:"):
-            link_task_to_project("Anonymous", "widgets")
+        result = link_task_to_project("Anonymous", "widgets")
+
+        assert result.task_id == "task-anonymous-task"
+        assert result.task_end == "set"
+        assert result.project_end == "added"
+        assert "::#task-anonymous-task]" in project_text(task_and_project)
+        assert task_project_property("task-anonymous-task") == (
+            "project-widgets"
+        )

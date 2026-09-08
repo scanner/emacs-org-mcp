@@ -457,6 +457,68 @@ The project index is a derived artifact rebuilt from a directory scan. It is
 refreshed after a link and a failure there is logged, not raised — a healthy
 link must not report as broken because a derived file could not be rebuilt.
 
+### Every Task Has an Id (`mcp_server/tasks.py`)
+
+`:CUSTOM_ID:` is what everything else addresses a task by — a project links to
+it, a `Record` hands it back as the reference for the next call, and archiving
+needs it as a locator because `find_task` resolves a substring to its *first*
+match, which is right for reading a task and wrong for a write that removes
+one.
+
+So it is an **invariant**, not a precondition of one operation. It used to be
+three different answers to the same question:
+
+| site | was | now |
+|---|---|---|
+| `create_task` | minted `:ID:` and `:CREATED:`, not `:CUSTOM_ID:` | mints all three |
+| `link_task_to_project` | refused: "Give it one first" | mints, then links |
+| `archive_tasks` | minted | mints (unchanged) |
+| `update_task` | preserved an existing one | unchanged, already right |
+
+The helpers live in `tasks.py` because that is the only home that avoids a
+cycle: minting needs `scan_task_identities` and `extract_task_description`, and
+`create_task` is there. `archiving.py` and `linking.py` import them, and
+`tasks.py` imports `archived_ids` from `files.py`, which depends on neither.
+
+**`create_task` prevents; `ensure_custom_id` repairs.** Minting at creation is
+what makes it an invariant; the repair path exists for tasks written before it
+and for anything arriving by other means. The repair writes through the
+ordinary guarded path and commits on its own, *before* the operation that asked
+for it — so a caller that then fails leaves a property addition explained by its
+own commit. It also passes the task's raw `headline:<text>` identity as the
+guard's `target`, because giving a task an id changes the identity the guard
+knows it by.
+
+**A ticket is not an id.** One ticket routinely covers several tasks, so
+`task-srt-1878` would collide meaningfully and the numeric suffix would say
+nothing about which task it is. Tickets are therefore *dropped* from the slug,
+not promoted to it. Org links are reduced to their description first: a headline
+carrying its ticket as a link otherwise slugs the URL —
+`[[https://host/browse/ABC-1][ABC-1]] Fix the thing` minted
+`task-https-host-browse` before this, which is not a truncation problem but a
+parsing one.
+
+**The shape rule is enforced wherever an id is used, not only where it is
+minted**, because an id can arrive by hand. `CUSTOM_ID_RE` allows letters,
+digits, dots, dashes and underscores — narrower than org, because the value goes
+into a link anchor as `::#<id>`, where a colon makes a link org may read
+differently, and archiving interpolates it into elisp source, where an
+unescaped quote is not a bad argument but different code.
+
+**Uniqueness spans the files an id can travel to.** `mint_custom_id` checks
+`tasks.org` *and* the archives, so a minted id cannot collide with a task that
+left the file last year. It reads the archives itself rather than taking them
+from the caller: an id source a caller has to remember to supply is one a new
+mint site is written without, and the two sites added by this change —
+`create_task` and `link_task_to_project` — are exactly the ones that would have
+forgotten. `load_archives()` and `archived_ids()` therefore live in `files.py`,
+which already owns the `<name>_archive` convention and which `tasks.py` can
+import without a cycle.
+
+**The tasks that already have none are left alone.** They get an id the first
+time they are linked or archived. A bulk rewrite would touch tasks nobody asked
+about, and every one of those writes is a commit.
+
 ### Archiving Is Org's Job (`mcp_server/archiving.py`, `emacs_archive.el`)
 
 Org already knows how to archive a subtree — which file receives it, what
@@ -478,11 +540,11 @@ guarantee that path provides is rebuilt here:
 
 **Keyed on `:CUSTOM_ID:`.** `find_task` resolves a substring to its *first*
 match — right for reading a task, wrong for removing one. A task with no id
-gets one written through the ordinary guarded path, committed on its own,
-before Emacs is invoked; the tasks most worth archiving are the oldest, which
-are exactly those predating the convention. The id is validated and quoted
-(`quote_elisp`) because it is interpolated into elisp source, where an
-unescaped quote is not a bad argument but different code.
+gets one first, via `ensure_custom_id` (see "Every Task Has an Id"), committed
+on its own before Emacs is invoked; archiving passes the ids its archives hold
+so the minted one cannot collide with something already archived. The id is
+quoted with `quote_elisp` on its way into elisp source, where an unescaped
+quote is not a bad argument but different code.
 
 **Prefer a duplicate to a hole.** On a verification failure tasks.org is
 restored from the pre-image — through `write_file()`, so the rollback is a
