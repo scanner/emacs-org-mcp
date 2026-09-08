@@ -51,7 +51,7 @@ from pathlib import Path
 
 # project imports
 from mcp_server.config import global_state, logger
-from mcp_server.files import ARCHIVE_SUFFIX, read_org_file, walk_org_files
+from mcp_server.files import ARCHIVE_SUFFIX, load_archives, read_org_file
 from mcp_server.linking import RELATED_TASKS, link_anchor_re
 from mcp_server.projects import (
     get_project,
@@ -59,14 +59,14 @@ from mcp_server.projects import (
     update_project_properties,
 )
 from mcp_server.tasks import (
+    CUSTOM_ID_RE,
     Task,
+    ensure_custom_id,
     extract_task_description,
-    find_task,
     find_task_candidates,
     remove_high_level_task,
     scan_section_headings,
     scan_task_identities,
-    write_tasks_org,
 )
 from mcp_server.utils import (
     backup_file,
@@ -92,54 +92,9 @@ ELISP_FILE = "emacs_archive.el"
 # nobody is being asked to read anything.
 ARCHIVE_TIMEOUT = 30
 
-# The shape of a :CUSTOM_ID: this will hand to Emacs: letters, digits, dots,
-# dashes and underscores, which is what _mint_custom_id produces. Narrower
-# than org allows, for two reasons. The value is interpolated into elisp
-# source, and one that cannot hold a quote, a backslash or whitespace cannot
-# become code even if the quoting is wrong. It also ends up in a link anchor
-# as `::#<id>`, where a colon in the id makes a link org may read differently.
-CUSTOM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
 # The :CUSTOM_ID: line of a task, for finding one in an archive file. Anchored
 # per line, so it cannot match across a heading.
 CUSTOM_ID_LINE = r"^[ \t]*:CUSTOM_ID:[ \t]*{}[ \t]*$"
-
-# Words a minted id should not end on. Taking the first few words of a headline
-# regularly stops mid-phrase, and an id ending in a preposition reads as though
-# it were truncated -- "...-poc-in" against a headline that continued. Only the
-# trailing words are dropped: one of these in the middle is part of the phrase.
-TRAILING_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "at",
-        "be",
-        "but",
-        "by",
-        "for",
-        "from",
-        "in",
-        "into",
-        "is",
-        "it",
-        "its",
-        "of",
-        "on",
-        "onto",
-        "or",
-        "over",
-        "that",
-        "the",
-        "this",
-        "to",
-        "under",
-        "with",
-        "without",
-    }
-)
 
 
 # =============================================================================
@@ -330,191 +285,6 @@ def _unique_by_identity(tasks: list[Task]) -> list[Task]:
             unique.append(task)
 
     return unique
-
-
-###############################################################################
-#
-def ensure_custom_id(task: Task) -> tuple[Task, bool]:
-    """
-    Make sure a task carries a ``:CUSTOM_ID:``, writing one if it does not.
-
-    Args:
-        task: The task about to be archived
-
-    Returns:
-        Tuple of (the task, whether an id had to be written).
-
-    Raises:
-        ArchiveError: If the task cannot be identified unambiguously in the
-            raw file, so that no write can be made safely.
-
-    Note:
-        Archiving keys on ``:CUSTOM_ID:`` because Emacs has to find the
-        heading and a headline is not a locator: ``find_task`` resolves a
-        substring to its *first* match, which for a write that removes a task
-        would archive whichever came first and report success.
-
-        The tasks most worth archiving are the oldest ones, which are exactly
-        those predating the convention, so refusing them would gut the tool.
-        The id is written through the ordinary guarded path and commits on its
-        own before Emacs is invoked, so a failed archive leaves a property
-        addition explained by its own commit rather than a stray edit.
-    """
-    if task.custom_id:
-        _validate_custom_id(task.custom_id)
-        return (task, False)
-
-    tasks_file = global_state.config.tasks_file
-    identity = _raw_identity_for(task, tasks_file.read_text(encoding="utf-8"))
-    custom_id = _mint_custom_id(task.headline)
-    _validate_custom_id(custom_id)
-
-    # find_task resolves a substring to its first match, so it is only safe to
-    # locate this task by its headline once the headline is known to name one
-    # task.
-    if len(find_task_candidates(task.headline)) != 1:
-        raise ArchiveError(
-            f"The headline '{task.headline}' names more than one task, so a "
-            f":CUSTOM_ID: cannot be written to the right one. Add one in "
-            f"Emacs and archive by it."
-        )
-
-    _, heading, _, org = find_task(task.headline)
-    heading.properties["CUSTOM_ID"] = custom_id
-    heading.properties["MODIFIED"] = get_current_timestamp(active=False)
-
-    # The task's identity in the raw file changes with this write -- it was
-    # known by its headline and is now known by its id -- so the guard has to
-    # be told which identity is allowed to disappear.
-    write_tasks_org(
-        org,
-        summary=f"assign :CUSTOM_ID: {custom_id} before archiving",
-        target=identity,
-    )
-
-    logger.info("Assigned :CUSTOM_ID: %s to '%s'", custom_id, task.headline)
-
-    task, _, _, _ = find_task(custom_id)
-    return (task, True)
-
-
-###############################################################################
-#
-def _raw_identity_for(task: Task, file_content: str) -> str:
-    """
-    Find the identity the write guard knows a task by.
-
-    Args:
-        task: A task with no ``:CUSTOM_ID:``
-        file_content: The current text of tasks.org
-
-    Returns:
-        The ``headline:<text>`` identity that
-        :func:`~mcp_server.tasks.scan_task_identities` reports for this task.
-
-    Raises:
-        ArchiveError: If no identity or more than one matches the headline.
-
-    Note:
-        The scan reads the headline from the raw line, so it keeps a priority
-        cookie and a progress cookie that the parsed headline does not. That
-        makes the identity worth looking up rather than reconstructing: an
-        exact match is used when there is one, and otherwise the headline has
-        to pick out exactly one raw identity or this refuses to guess.
-    """
-    exact = f"headline:{task.headline}"
-    identities = [
-        identity
-        for identity in scan_task_identities(file_content)
-        if identity.startswith("headline:")
-    ]
-
-    if exact in identities:
-        return exact
-
-    containing = [
-        identity for identity in identities if task.headline in identity
-    ]
-    if len(containing) == 1:
-        return containing[0]
-
-    raise ArchiveError(
-        f"Cannot safely identify the task '{task.headline}' in tasks.org: it "
-        f"has no :CUSTOM_ID: and its headline matches "
-        f"{len(containing)} un-named task(s) in the file. Give it a "
-        f":CUSTOM_ID: and archive it by that."
-    )
-
-
-###############################################################################
-#
-def _mint_custom_id(headline: str) -> str:
-    """
-    Build a ``:CUSTOM_ID:`` for a task that has none.
-
-    Args:
-        headline: The task's headline
-
-    Returns:
-        A ``task-`` prefixed slug of the headline, unique in the file.
-
-    Note:
-        Follows the guide's ``task-<identifier>`` shape, taking the leading
-        words of the headline so the id says which task it names, and
-        stopping short of a trailing preposition so it reads as a phrase
-        rather than a truncation. A collision gets a numeric suffix rather
-        than being silently reused, since two tasks sharing an id would make
-        both unfindable.
-
-        The archives are checked alongside tasks.org, because the archive is
-        where this task is heading: an id already used by something archived
-        would put two identically-named tasks in one file, which is the
-        collision that matters here.
-    """
-    description = extract_task_description(headline).lower()
-    words = re.findall(r"[a-z0-9]+", description)[:6]
-
-    while len(words) > 1 and words[-1] in TRAILING_STOPWORDS:
-        words.pop()
-
-    base = "-".join(words) or "task"
-
-    existing = set(
-        scan_task_identities(
-            global_state.config.tasks_file.read_text(encoding="utf-8")
-        )
-    )
-    archives = load_archives()
-
-    candidate = f"task-{base}"
-    suffix = 2
-    while candidate in existing or any(
-        _matches_custom_id_line(text, candidate) for _, text in archives
-    ):
-        candidate = f"task-{base}-{suffix}"
-        suffix += 1
-
-    return candidate
-
-
-###############################################################################
-#
-def _validate_custom_id(custom_id: str) -> None:
-    """
-    Refuse a ``:CUSTOM_ID:`` this cannot hand to Emacs safely.
-
-    Args:
-        custom_id: The id about to be interpolated into elisp
-
-    Raises:
-        ArchiveError: If the id is not the shape this server writes.
-    """
-    if not CUSTOM_ID_RE.match(custom_id):
-        raise ArchiveError(
-            f"Refusing to archive by the :CUSTOM_ID: '{custom_id}': it is not "
-            f"the shape this server writes, and it has to be passed to Emacs "
-            f"as elisp. Rename it to letters, digits, dots and dashes."
-        )
 
 
 # =============================================================================
@@ -783,31 +553,6 @@ def task_in_archive(custom_id: str, archive_file: Path) -> bool:
         return False
 
     return _matches_custom_id_line(text, custom_id)
-
-
-###############################################################################
-#
-def load_archives() -> list[tuple[Path, str]]:
-    """
-    Read every archive file under the search roots.
-
-    Returns:
-        Each archive file and its text.
-
-    Note:
-        Archives are recognised by org's ``<name>_archive`` convention, the
-        same way :mod:`~mcp_server.files` recognises them for searching, so
-        this works for whatever files an installation has rather than for one
-        named file. Read once per call: an identifier that resolves to a live
-        task never needs them at all, and a batch of twenty that do not should
-        not walk the roots twenty times.
-    """
-    return [
-        (path, text)
-        for path in walk_org_files(global_state.config.search_roots)
-        if path.name.endswith(ARCHIVE_SUFFIX)
-        if (text := read_org_file(path)) is not None
-    ]
 
 
 ###############################################################################
@@ -1245,7 +990,11 @@ def archive_tasks(identifiers: list[str]) -> ArchiveReport:
     for task in targets:
         try:
             report.archived.append(archive_task(task))
-        except ArchiveError as error:
+        except ValueError as error:
+            # ValueError rather than ArchiveError: giving a task a
+            # :CUSTOM_ID: happens first and raises the ordinary kind, and a
+            # batch that stopped there must still report what it archived
+            # rather than losing it to an exception.
             report.failure = str(error)
             break
 

@@ -13,7 +13,8 @@ from orgmunge import Org
 from orgmunge.classes import Heading
 
 # project imports
-from mcp_server.config import global_state
+from mcp_server.config import global_state, logger
+from mcp_server.files import archived_ids
 from mcp_server.properties import format_drawer
 from mcp_server.results import (
     DetailLevel,
@@ -49,6 +50,77 @@ PROPERTIES = ("CUSTOM_ID", "ID", "CREATED", "MODIFIED", "CLOSED", "PROJECT")
 # "* High Level Tasks (in order) [1/2]".  Stripped when comparing sections
 # across a write, since the cookie changes while the section does not.
 SECTION_COOKIE_RE = re.compile(r"[ \t]*\[\d*/\d*\][ \t]*$")
+
+# A ticket in a headline, e.g. the "GH-28" in "GH-28 Add cloning". Used to
+# report a task's ticket, and to keep one out of a minted :CUSTOM_ID: -- a
+# ticket often covers several tasks, so it does not identify one.
+TICKET_RE = re.compile(r"\b[A-Z][A-Z0-9]*-\d+\b")
+
+# An org link. The first form keeps its description and drops the target; the
+# second has no description and goes entirely. Headlines carry links to the
+# ticket they came from, and a link's URL is not words about the task.
+ORG_LINK_RE = re.compile(r"\[\[[^\]]*\]\[([^\]]*)\]\]")
+BARE_ORG_LINK_RE = re.compile(r"\[\[[^\]]*\]\]")
+
+# The shape of a :CUSTOM_ID: this server will write or act on. Narrower than
+# org allows, for two reasons: the value goes into a link anchor as `::#<id>`,
+# where a colon makes a link org may read differently, and archiving
+# interpolates it into elisp source, where an unescaped quote is not a bad
+# argument but different code.
+CUSTOM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+# How many words of a headline a minted id may use.
+CUSTOM_ID_WORDS = 6
+
+# Words a minted id should not end on. Taking the leading words of a headline
+# regularly stops mid-phrase, and an id ending in a preposition or conjunction
+# reads as though it were truncated -- which it was. Only trailing words are
+# dropped: one of these in the middle is part of the phrase.
+TRAILING_STOPWORDS = frozenset(
+    {
+        "a",
+        "after",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "because",
+        "before",
+        "but",
+        "by",
+        "for",
+        "from",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "onto",
+        "or",
+        "over",
+        "so",
+        "than",
+        "that",
+        "the",
+        "then",
+        "this",
+        "to",
+        "under",
+        "unless",
+        "until",
+        "when",
+        "whether",
+        "which",
+        "while",
+        "with",
+        "without",
+    }
+)
 
 # Where a task may be placed in its section. Position is priority, so these
 # are the vocabulary for saying what a task's priority is relative to the rest.
@@ -98,8 +170,8 @@ class Task:
     @property
     def ticket_id(self) -> str | None:
         """Extract GH/JIRA ticket ID from headline if present."""
-        match = re.search(r"\b([A-Z]+-\d+)\b", self.headline)
-        return match.group(1) if match else None
+        match = TICKET_RE.search(self.headline)
+        return match.group(0) if match else None
 
 
 # =============================================================================
@@ -1093,6 +1165,293 @@ def remove_high_level_task(file_content: str, description: str) -> str | None:
 
 
 # =============================================================================
+# Task Identity
+# =============================================================================
+#
+# A task's :CUSTOM_ID: is what everything else addresses it by: a project links
+# to it, a search result hands it back as the reference for the next call, and
+# archiving needs it as a locator because a headline is not one -- find_task
+# resolves a substring to its *first* match, which is right for reading a task
+# and wrong for a write that removes one.
+#
+# So it is an invariant, not a precondition of any single operation: a task has
+# a stable identity, given when it is created and repaired wherever it is found
+# missing. These helpers live here because that is where create_task lives and
+# where the raw-text scan lives; archiving and linking import them.
+
+
+###############################################################################
+#
+def slug_words(headline: str) -> list[str]:
+    """
+    Reduce a headline to the words a ``:CUSTOM_ID:`` can be built from.
+
+    Args:
+        headline: A task headline, as written
+
+    Returns:
+        Lowercase alphanumeric words, in order.
+
+    Note:
+        Org links are reduced to their description and ticket ids dropped
+        before the words are taken, because neither is words about the task. A
+        headline carrying its ticket as a link otherwise slugs the URL:
+        ``[[https://host/browse/ABC-1][ABC-1]] Fix the thing`` would begin
+        ``https-host-browse``.
+
+        The ticket is dropped rather than promoted to the id. One ticket
+        routinely covers several tasks, so it does not identify one of them.
+    """
+    text = ORG_LINK_RE.sub(r"\1", headline)
+    text = BARE_ORG_LINK_RE.sub(" ", text)
+    text = TICKET_RE.sub(" ", text)
+
+    return re.findall(r"[a-z0-9]+", extract_task_description(text).lower())
+
+
+###############################################################################
+#
+def mint_custom_id(headline: str) -> str:
+    """
+    Build a ``:CUSTOM_ID:`` for a task that has none.
+
+    Args:
+        headline: The task's headline
+
+    Returns:
+        A ``task-`` prefixed slug of the headline, unique against every file
+        the id can travel to.
+
+    Note:
+        Follows the guide's ``task-<identifier>`` shape, taking the leading
+        words of the headline so the id says which task it names, and stopping
+        short of a trailing preposition or conjunction so it reads as a phrase
+        rather than a truncation.
+
+        A collision gets a numeric suffix rather than being silently reused,
+        since two tasks sharing an id would make both unfindable. The archives
+        are consulted alongside tasks.org because a task archived last year is
+        no longer in tasks.org while its id is still spoken for -- and reading
+        them here rather than taking them from the caller is what stops a new
+        mint site from being written without that check.
+    """
+    words = slug_words(headline)[:CUSTOM_ID_WORDS]
+
+    while len(words) > 1 and words[-1] in TRAILING_STOPWORDS:
+        words.pop()
+
+    base = "-".join(words) or "task"
+    taken = set(existing_identities()) | archived_ids()
+
+    candidate = f"task-{base}"
+    suffix = 2
+    while candidate in taken:
+        candidate = f"task-{base}-{suffix}"
+        suffix += 1
+
+    return candidate
+
+
+###############################################################################
+#
+def existing_identities() -> list[str]:
+    """
+    List the identities tasks.org already uses.
+
+    Returns:
+        Every task identity in the file, or an empty list when there is no
+        file yet.
+    """
+    tasks_file = global_state.config.tasks_file
+    if not tasks_file.exists():
+        return []
+
+    return scan_task_identities(tasks_file.read_text(encoding="utf-8"))
+
+
+###############################################################################
+#
+def validate_custom_id(custom_id: str) -> None:
+    """
+    Refuse a ``:CUSTOM_ID:`` this server cannot act on safely.
+
+    Args:
+        custom_id: The id to check
+
+    Raises:
+        ValueError: If the id is not the shape this server writes.
+
+    Note:
+        Checked wherever an id is used rather than only where it is minted: an
+        id can arrive by hand, and both places it ends up -- an org link anchor
+        and, when archiving, elisp source -- take their meaning from characters
+        this shape does not allow.
+    """
+    if not CUSTOM_ID_RE.match(custom_id):
+        raise ValueError(
+            f"'{custom_id}' is not a usable :CUSTOM_ID:. It is written into "
+            f"org link anchors and passed to Emacs, so it has to be letters, "
+            f"digits, dots, dashes and underscores. Rename it and try again."
+        )
+
+
+###############################################################################
+#
+def raw_identity_for(task: Task, file_content: str) -> str:
+    """
+    Find the identity the write guard knows a task by.
+
+    Args:
+        task: A task with no ``:CUSTOM_ID:``
+        file_content: The current text of tasks.org
+
+    Returns:
+        The ``headline:<text>`` identity that :func:`scan_task_identities`
+        reports for this task.
+
+    Raises:
+        ValueError: If no identity or more than one matches the headline.
+
+    Note:
+        The scan reads the headline from the raw line, so it keeps a priority
+        cookie and a progress cookie that the parsed headline does not. That
+        makes the identity worth looking up rather than reconstructing: an
+        exact match is used when there is one, and otherwise the headline has
+        to pick out exactly one raw identity or this refuses to guess.
+
+        Needed because giving a task an id *changes* the identity the guard
+        knows it by -- from its headline to its new id -- so the guard has to
+        be told which one is allowed to disappear.
+    """
+    exact = f"headline:{task.headline}"
+    identities = [
+        identity
+        for identity in scan_task_identities(file_content)
+        if identity.startswith("headline:")
+    ]
+
+    if exact in identities:
+        return exact
+
+    containing = [
+        identity for identity in identities if task.headline in identity
+    ]
+    if len(containing) == 1:
+        return containing[0]
+
+    raise ValueError(
+        f"Cannot safely identify the task '{task.headline}' in tasks.org: it "
+        f"has no :CUSTOM_ID: and its headline matches "
+        f"{len(containing)} un-named task(s) in the file. Give it a "
+        f":CUSTOM_ID: in Emacs and try again."
+    )
+
+
+###############################################################################
+#
+def ensure_custom_id(task: Task) -> tuple[Task, bool]:
+    """
+    Make sure a task in tasks.org carries a ``:CUSTOM_ID:``, writing one if
+    it does not.
+
+    Args:
+        task: The task to check
+
+    Returns:
+        Tuple of (the task, whether an id had to be written). The task is
+        re-read after a write, so its ``custom_id`` is always populated.
+
+    Raises:
+        ValueError: If the task cannot be identified unambiguously in the raw
+            file, so that no write can be made safely.
+
+    Note:
+        This repairs; :func:`create_task` prevents. The tasks that reach here
+        without an id are the oldest ones -- those predating the convention --
+        which are exactly the ones being filed under a project for the first
+        time or archived, so refusing them would make both tools useless where
+        they are most wanted.
+
+        The write goes through the ordinary guarded path and commits on its
+        own, before whatever operation asked for the id. A caller that then
+        fails leaves a property addition explained by its own commit rather
+        than a stray edit.
+    """
+    if task.custom_id:
+        validate_custom_id(task.custom_id)
+        return (task, False)
+
+    tasks_file = global_state.config.tasks_file
+    identity = raw_identity_for(task, tasks_file.read_text(encoding="utf-8"))
+    custom_id = mint_custom_id(task.headline)
+    validate_custom_id(custom_id)
+
+    # find_task resolves a substring to its first match, so locating this task
+    # by its headline is only safe once the headline is known to name one task.
+    if len(find_task_candidates(task.headline)) != 1:
+        raise ValueError(
+            f"The headline '{task.headline}' names more than one task, so a "
+            f":CUSTOM_ID: cannot be written to the right one. Give it one in "
+            f"Emacs and try again."
+        )
+
+    _, heading, _, org = find_task(task.headline)
+    heading.properties["CUSTOM_ID"] = custom_id
+    heading.properties["MODIFIED"] = get_current_timestamp(active=False)
+
+    write_tasks_org(
+        org,
+        summary=f"assign :CUSTOM_ID: {custom_id}",
+        target=identity,
+    )
+
+    logger.info("Assigned :CUSTOM_ID: %s to '%s'", custom_id, task.headline)
+
+    task, _, _, _ = find_task(custom_id)
+    return (task, True)
+
+
+###############################################################################
+#
+def apply_automatic_properties(heading: Heading) -> None:
+    """
+    Fill in the properties a new task gets whether or not it was given them.
+
+    Args:
+        heading: The parsed task entry, modified in place
+
+    Note:
+        ``:ID:`` and ``:CREATED:`` were already filled in here. ``:CUSTOM_ID:``
+        now is too, which is what stops the server creating a task that
+        nothing can address: the guide calls the property required, and every
+        other tool -- linking, archiving, the reference on a search result --
+        addresses a task by it.
+
+        Minting at creation is what makes it an invariant rather than a repair.
+        ``ensure_custom_id`` still exists for the tasks written before this,
+        and for anything that arrives by other means.
+    """
+    if not hasattr(heading, "properties") or not heading.properties:
+        heading.properties = {}
+
+    if "ID" not in heading.properties:
+        heading.properties["ID"] = str(uuid.uuid4()).upper()
+
+    if "CREATED" not in heading.properties:
+        heading.properties["CREATED"] = get_current_timestamp(active=True)
+
+    if custom_id := heading.properties.get("CUSTOM_ID", ""):
+        validate_custom_id(custom_id)
+    else:
+        title = (
+            heading.headline.title
+            if hasattr(heading.headline, "title")
+            else str(heading.headline)
+        )
+        heading.properties["CUSTOM_ID"] = mint_custom_id(title)
+
+
+# =============================================================================
 # Task CRUD Operations
 # =============================================================================
 
@@ -1123,8 +1482,9 @@ def create_task(
         ValueError: If section is not found
 
     Note:
-        Automatically generates UUID for :ID: property if not present.
-        Sets :CREATED: timestamp when creating new task.
+        Fills in :ID:, :CREATED: and :CUSTOM_ID: when the entry does not carry
+        them, so a created task is always addressable; see
+        :func:`apply_automatic_properties`.
         Adds to High Level Tasks checklist if creating in active section.
     """
     org = get_org()
@@ -1136,22 +1496,13 @@ def create_task(
     if target_section is None:
         raise ValueError(f"Section not found: {section_name}")
 
-    # Generate UUID for :ID: property if not present
-    if not hasattr(new_task, "properties") or not new_task.properties:
-        new_task.properties = {}
-    if "ID" not in new_task.properties:
-        new_task.properties["ID"] = str(uuid.uuid4()).upper()
-
-    # Set :CREATED: timestamp (active) when creating new task
-    if "CREATED" not in new_task.properties:
-        new_task.properties["CREATED"] = get_current_timestamp(active=True)
+    apply_automatic_properties(new_task)
 
     # Generate org string for the new task
     new_task_org = heading_to_org_string(new_task)
 
-    # Get context name from task (custom_id or fallback)
-    custom_id = new_task.properties.get("CUSTOM_ID", "new-task")
-    context_name = custom_id.lstrip("task-")  # e.g., "gh-127" or "new-task"
+    custom_id = new_task.properties["CUSTOM_ID"]
+    context_name = custom_id.removeprefix("task-")  # e.g. "gh-127"
 
     # Request approval via ediff
     approved, final_content = request_ediff_approval(
@@ -1163,16 +1514,13 @@ def create_task(
     if not approved:
         raise ValueError("User rejected task creation")
 
-    # If edited, re-parse the final content and re-apply automatic properties
+    # If edited, re-parse the final content and re-apply automatic properties.
+    # An id removed in the ediff is minted again from whatever the headline now
+    # says, so approving an entry can never produce an unaddressable task.
     if final_content != new_task_org:
         new_task = parse_task_entry(final_content)
-        # Re-apply automatic properties
-        if not hasattr(new_task, "properties") or not new_task.properties:
-            new_task.properties = {}
-        if "ID" not in new_task.properties:
-            new_task.properties["ID"] = str(uuid.uuid4()).upper()
-        if "CREATED" not in new_task.properties:
-            new_task.properties["CREATED"] = get_current_timestamp(active=True)
+        apply_automatic_properties(new_task)
+        custom_id = new_task.properties["CUSTOM_ID"]
 
     place_child(target_section, new_task, position, relative_to)
 

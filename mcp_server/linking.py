@@ -45,7 +45,12 @@ from mcp_server.projects import (
     replace_project_section,
     update_project_properties,
 )
-from mcp_server.tasks import Task, find_task, write_tasks_org
+from mcp_server.tasks import (
+    Task,
+    ensure_custom_id,
+    find_task,
+    write_tasks_org,
+)
 from mcp_server.utils import get_current_timestamp, write_file
 
 # =============================================================================
@@ -191,16 +196,26 @@ def _set_task_project(
         ``normalized``, ``cleared`` or ``unchanged``.
 
     Raises:
-        ValueError: If the task has no ``:CUSTOM_ID:`` to link by, or is
-            already linked to a different project.
+        ValueError: If the task is already linked to a different project, or
+            cannot be identified unambiguously in order to be given an id.
+
+    Note:
+        A task with no ``:CUSTOM_ID:`` is given one rather than refused. The
+        link is *by* that id, so one is required -- but refusing asked the
+        user to go and do by hand exactly what this is about to do anyway, and
+        it fired on the oldest tasks, which are the ones most likely to be
+        filed under a project for the first time.
+
+        The id is written first, as its own commit, and the task re-read: the
+        write invalidates the parsed tree this was about to modify.
     """
     task, heading, _, org = find_task(task_identifier)
 
-    if not task.custom_id:
-        raise ValueError(
-            f"Task '{task.headline}' has no :CUSTOM_ID:, so there is nothing "
-            f"for a project to link to. Give it one first."
-        )
+    # Only when a link is being made. Clearing a :PROJECT: needs no id, and
+    # minting one during an unlink would be a write nobody asked for.
+    if project is not None and not task.custom_id:
+        task, _ = ensure_custom_id(task)
+        task, heading, _, org = find_task(task.custom_id)
 
     current = task.project.strip()
     canonical = project.custom_id if project else ""
