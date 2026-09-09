@@ -1,5 +1,16 @@
-"""Tests for MCP resource listing and reading."""
+#!/usr/bin/env python
+#
+"""
+Tests for the documentation the server hands clients as MCP resources.
 
+The guides are how a client learns the task, journal and project formats
+without the user writing them into a config file, so the promises here are
+that the server advertises them, that reading one returns the file on disk
+rather than a stale copy compiled in, and that the two agree -- a guide
+listed but not readable is a link to nothing.
+"""
+
+# system imports
 import asyncio
 import json
 import subprocess
@@ -7,28 +18,52 @@ import sys
 from pathlib import Path
 from typing import cast
 
+# 3rd party imports
 import pytest
 
-from mcp_server.resources import (
-    get_journal_format_guide,
-    get_project_format_guide,
-    get_task_format_guide,
-    list_resources,
-    load_guide,
-    read_resource,
+# project imports
+from mcp_server.resources import list_resources, load_guide, read_resource
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+GUIDES_DIR = Path(__file__).parent.parent / "resources" / "guides"
+
+GUIDE_URI_PREFIX = "emacs-org://guide/"
+
+# The guides the server is expected to offer. Named here so that dropping one
+# from the listing is a failure rather than one fewer loop iteration.
+GUIDE_URIS = (
+    "emacs-org://guide/task-format",
+    "emacs-org://guide/journal-format",
+    "emacs-org://guide/project-format",
 )
 
 
+###############################################################################
+#
+def guide_file_for(uri: str) -> Path:
+    """The file a guide URI names, by the server's own convention."""
+    return GUIDES_DIR / f"{uri.removeprefix(GUIDE_URI_PREFIX)}.md"
+
+
+# =============================================================================
+# Capabilities
+# =============================================================================
+
+
+###############################################################################
+###############################################################################
+#
 class TestServerCapabilities:
-    """Tests that the MCP server advertises required capabilities to clients.
+    """What the server tells a client it can do."""
 
-    These tests catch the regression where ServerCapabilities() was constructed
-    without 'resources' or 'tools', causing MCP clients to never request them.
-    """
-
+    ###########################################################################
+    #
     @pytest.fixture
     def server_init_response(self) -> dict[str, object]:
-        """Run the real server process and perform the MCP initialize handshake."""
+        """Run the real server and perform the MCP initialize handshake."""
         server_py = Path(__file__).parent.parent / "server.py"
         init_request = json.dumps(
             {
@@ -51,170 +86,106 @@ class TestServerCapabilities:
         )
         return cast(dict[str, object], json.loads(result.stdout.strip()))
 
+    ###########################################################################
+    #
     @pytest.mark.parametrize("capability", ["resources", "tools"])
-    def test_server_advertises_capability(
+    def test_a_capability_the_server_has_is_advertised(
         self, server_init_response: dict, capability: str
-    ) -> None:
+    ):
         """
-        GIVEN the MCP server starts and receives an initialize request
-        WHEN it returns its capabilities
-        THEN 'resources' and 'tools' must both be present so clients know to
-             request them — omitting either silently breaks resource/tool access
+        GIVEN: A client completing the MCP initialize handshake
+         WHEN: The server returns its capabilities
+         THEN: Both resources and tools are named, because a client asks only
+               for what was advertised -- omitting one hides every resource or
+               every tool while the server keeps serving them to nobody
+
+        Built against the real server process rather than the handler, since
+        the regression this pins was in the `ServerCapabilities(...)` call and
+        an in-process test would have constructed it correctly by hand.
         """
         capabilities = server_init_response["result"]["capabilities"]
+
         assert capability in capabilities, (
-            f"ServerCapabilities() is missing '{capability}' — "
-            f"MCP clients will not request {capability}. "
-            f"Add {capability}={capability.capitalize()}Capability() to the "
-            f"ServerCapabilities(...) call in server.py."
+            f"ServerCapabilities() is missing '{capability}', so clients will "
+            f"never request {capability}."
         )
 
 
-class TestLoadGuide:
-    """Tests for the load_guide() helper function."""
+# =============================================================================
+# Guides
+# =============================================================================
 
-    @pytest.mark.parametrize(
-        "filename",
-        [
-            "task-format.md",
-            "journal-format.md",
-            "project-format.md",
-        ],
-    )
-    def test_load_guide_returns_file_content(self, filename: str) -> None:
+
+###############################################################################
+###############################################################################
+#
+class TestTheGuides:
+    """Reading the format documentation the server offers."""
+
+    ###########################################################################
+    #
+    def test_the_format_guides_are_offered(self):
         """
-        Given a guide file exists
-        When load_guide is called
-        Then it should return the exact file contents
+        GIVEN: A client asking what resources the server has
+         WHEN: The listing is returned
+         THEN: All three format guides are in it, since a client that cannot
+               see one has no way to ask for it
         """
-        guides_dir = Path(__file__).parent.parent / "resources" / "guides"
-        expected = (guides_dir / filename).read_text()
-        actual = load_guide(filename)
-        assert actual == expected
+        offered = {
+            str(resource.uri) for resource in asyncio.run(list_resources())
+        }
 
-    def test_load_nonexistent_guide(self) -> None:
+        assert set(GUIDE_URIS) <= offered
+
+    ###########################################################################
+    #
+    def test_every_guide_offered_reads_back_as_its_file(self):
         """
-        Given a guide file does not exist
-        When load_guide is called with a non-existent filename
-        Then it should raise FileNotFoundError
+        GIVEN: Each guide the server advertises
+         WHEN: It is read
+         THEN: It returns the file on disk, byte for byte, as markdown -- so
+               editing a guide changes what clients are told, with no step in
+               between
+          AND: Every advertised guide reads: one that is listed but not served
+               is a link to nothing, and this walks the listing rather than a
+               list of its own so a newly offered guide is covered the day it
+               is added
         """
-        with pytest.raises(FileNotFoundError):
-            load_guide("nonexistent.md")
-
-
-class TestResourceContentGenerators:
-    """Tests for the resource content generator functions."""
-
-    @pytest.mark.parametrize(
-        "func,filename",
-        [
-            (get_task_format_guide, "task-format.md"),
-            (get_journal_format_guide, "journal-format.md"),
-            (get_project_format_guide, "project-format.md"),
-        ],
-    )
-    def test_guide_generator_returns_file_content(
-        self, func, filename: str
-    ) -> None:
-        """
-        Given a guide generator function is called
-        When it loads its guide file
-        Then it should return the exact file contents
-        """
-        guides_dir = Path(__file__).parent.parent / "resources" / "guides"
-        expected = (guides_dir / filename).read_text()
-        actual = func()
-        assert actual == expected
-
-
-class TestListResources:
-    """Tests for the list_resources() function."""
-
-    def test_list_resources_includes_all_guides(self) -> None:
-        """
-        Given list_resources is called
-        When it returns the list of available resources
-        Then it should include both guide resources
-        """
-        resources = asyncio.run(list_resources())
-
-        guide_uris = [
-            "emacs-org://guide/task-format",
-            "emacs-org://guide/journal-format",
-            "emacs-org://guide/project-format",
+        offered = [
+            str(resource.uri)
+            for resource in asyncio.run(list_resources())
+            if str(resource.uri).startswith(GUIDE_URI_PREFIX)
         ]
+        assert offered, "no guides were offered at all"
 
-        actual_uris = [str(r.uri) for r in resources]
-        for uri in guide_uris:
-            assert uri in actual_uris, f"Resource {uri} should be in list"
+        for uri in offered:
+            contents = asyncio.run(read_resource(uri))
 
+            assert len(contents) == 1, uri
+            assert contents[0].content == guide_file_for(uri).read_text(), uri
+            assert contents[0].mime_type == "text/markdown", uri
 
-class TestReadResource:
-    """Tests for the read_resource() function."""
-
-    @pytest.mark.parametrize(
-        "uri,filename",
-        [
-            ("emacs-org://guide/task-format", "task-format.md"),
-            ("emacs-org://guide/journal-format", "journal-format.md"),
-            ("emacs-org://guide/project-format", "project-format.md"),
-        ],
-    )
-    def test_read_resource_returns_file_content(
-        self, uri: str, filename: str
-    ) -> None:
+    ###########################################################################
+    #
+    def test_an_unknown_resource_is_refused(self):
         """
-        Given read_resource is called with a guide URI
-        When it loads the resource
-        Then it should return ReadResourceContents with the exact file contents
-        """
-        guides_dir = Path(__file__).parent.parent / "resources" / "guides"
-        expected = (guides_dir / filename).read_text()
-        result = asyncio.run(read_resource(uri))
-
-        # read_resource now returns list[ReadResourceContents]
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert result[0].content == expected
-        assert result[0].mime_type == "text/markdown"
-
-    def test_read_resource_unknown(self) -> None:
-        """
-        Given read_resource is called with an unknown URI
-        When it attempts to load the resource
-        Then it should raise ValueError
+        GIVEN: A URI the server serves nothing for
+         WHEN: It is read
+         THEN: It is refused by name, rather than returning empty content that
+               a client would render as an empty guide
         """
         with pytest.raises(ValueError, match="Unknown resource"):
             asyncio.run(read_resource("emacs-org://guide/nonexistent"))
 
-    def test_all_listed_guides_are_readable(self) -> None:
+    ###########################################################################
+    #
+    def test_a_guide_whose_file_is_gone_is_refused(self):
         """
-        Given all guide resources from list_resources
-        When each guide is read via read_resource
-        Then all should successfully return the file contents
+        GIVEN: A guide file that is not on disk
+         WHEN: It is loaded
+         THEN: It raises rather than returning empty text, so a packaging
+               mistake that drops a guide fails loudly instead of serving a
+               client an empty document
         """
-        guides_dir = Path(__file__).parent.parent / "resources" / "guides"
-        resources = asyncio.run(list_resources())
-
-        guide_resources = [
-            r for r in resources if str(r.uri).startswith("emacs-org://guide/")
-        ]
-
-        # Map URIs to filenames
-        uri_to_file = {
-            "emacs-org://guide/task-format": "task-format.md",
-            "emacs-org://guide/journal-format": "journal-format.md",
-            "emacs-org://guide/project-format": "project-format.md",
-        }
-
-        for resource in guide_resources:
-            uri_str = str(resource.uri)
-            expected = (guides_dir / uri_to_file[uri_str]).read_text()
-            result = asyncio.run(read_resource(uri_str))
-
-            # read_resource now returns list[ReadResourceContents]
-            assert isinstance(result, list)
-            assert len(result) == 1
-            assert result[0].content == expected, (
-                f"Resource {uri_str} should return file contents"
-            )
+        with pytest.raises(FileNotFoundError):
+            load_guide("nonexistent.md")

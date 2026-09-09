@@ -1,4 +1,14 @@
-"""Tests for journal-related server functions."""
+#!/usr/bin/env python
+#
+"""
+Tests for the day-by-day journal: which file a date names, and what an entry
+promises once it is in one.
+
+The journal is the corpus most often written by hand, so the promises here
+lean towards reading what is already there rather than imposing a shape on
+it -- either filename convention is honoured, a day with no file is not an
+error, and an edit leaves the rest of the day exactly as it was.
+"""
 
 from datetime import date, timedelta
 from pathlib import Path
@@ -22,173 +32,191 @@ from tests.conftest import (
 
 
 class TestGetJournalPath:
-    """Tests for get_journal_path function."""
+    """
+    Which file a date names.
 
-    def test_path_format(self, empty_journal_dir: Path) -> None:
-        """Test that journal path uses YYYYMMDD format."""
+    A journal directory is written by hand as much as by this server, and the
+    files in one are named either `20250915` or `20250915.org` depending on
+    who started it. Both are read, and a new file joins whichever convention
+    the directory already keeps rather than imposing one.
+    """
+
+    def test_a_date_names_a_file_in_the_journal_directory(
+        self, empty_journal_dir: Path
+    ):
+        """
+        GIVEN: A date with no journal file yet
+         WHEN: Its path is worked out
+         THEN: It is that date as YYYYMMDD, inside the journal directory, so
+               the files sort chronologically by name
+        """
         path = get_journal_path(date(2025, 1, 15))
 
-        assert path.name == "20250115"
+        with check:
+            assert path.name == "20250115"
+        with check:
+            assert path.parent == empty_journal_dir
 
-    def test_path_in_journal_dir(self, empty_journal_dir: Path) -> None:
-        """Test that path is within the journal directory."""
-        path = get_journal_path(date(2025, 12, 22))
-
-        assert path.parent == empty_journal_dir
-
-    def test_finds_file_with_org_extension(
+    def test_an_existing_file_is_found_whichever_way_it_is_named(
         self, empty_journal_dir: Path
-    ) -> None:
-        """Test that journal files with .org extension are found."""
-        target_date = date(2025, 6, 15)
-        org_file = empty_journal_dir / "20250615.org"
-        org_file.write_text("* 2025-06-15\n\n** 10:00 Test entry\n- Content\n")
+    ):
+        """
+        GIVEN: A day whose file was written with a .org extension, and a day
+               whose file exists under both spellings
+         WHEN: Each date's path is worked out
+         THEN: The existing file is returned rather than a new name beside it
+          AND: Where both exist the .org one wins, so the pair is resolved the
+               same way every time instead of by directory order
+        """
+        org_only = empty_journal_dir / "20250615.org"
+        org_only.write_text("* 2025-06-15\n")
 
-        path = get_journal_path(target_date)
+        both_plain = empty_journal_dir / "20250720"
+        both_org = empty_journal_dir / "20250720.org"
+        both_plain.write_text("* 2025-07-20\n")
+        both_org.write_text("* 2025-07-20\n")
 
-        assert path == org_file
-        assert path.suffix == ".org"
+        with check:
+            assert get_journal_path(date(2025, 6, 15)) == org_only
+        with check:
+            assert get_journal_path(date(2025, 7, 20)) == both_org
 
-    def test_prefers_org_extension_over_no_extension(
-        self, empty_journal_dir: Path
-    ) -> None:
-        """Test that .org extension is preferred when both files exist."""
-        target_date = date(2025, 7, 20)
-        no_ext_file = empty_journal_dir / "20250720"
-        org_file = empty_journal_dir / "20250720.org"
-        no_ext_file.write_text("* 2025-07-20\n\n** 09:00 No extension\n")
-        org_file.write_text("* 2025-07-20\n\n** 09:00 With org extension\n")
+    @pytest.mark.parametrize(
+        "suffix", [".org", ""], ids=["org-extension", "no-extension"]
+    )
+    def test_a_new_file_is_named_the_way_the_existing_ones_are(
+        self, empty_journal_dir: Path, suffix: str
+    ):
+        """
+        GIVEN: A journal directory whose files all follow one naming
+               convention
+         WHEN: A path is worked out for a day that has no file yet
+         THEN: The new name follows that convention, so a directory does not
+               end up half in one spelling and half in the other
+        """
+        (empty_journal_dir / f"20250101{suffix}").write_text("* 2025-01-01\n")
 
-        path = get_journal_path(target_date)
+        path = get_journal_path(date(2025, 9, 15))
 
-        assert path == org_file
-
-    def test_parses_entries_from_org_extension_file(
-        self, empty_journal_dir: Path
-    ) -> None:
-        """Test that entries are correctly parsed from .org files."""
-        org_file = empty_journal_dir / "20250810.org"
-        org_file.write_text(
-            "* 2025-08-10\n\n"
-            "** 14:30 JIRA-1234 Test with org extension\n"
-            "- Did something\n"
-        )
-
-        entries = parse_journal_entries(org_file)
-
-        assert len(entries) == 1
-        assert entries[0].time == "14:30"
-        assert entries[0].headline == "JIRA-1234 Test with org extension"
-        assert entries[0].file_date == "20250810"  # Should be without .org
-
-    def test_new_file_uses_org_extension_when_existing_files_have_it(
-        self, empty_journal_dir: Path
-    ) -> None:
-        """Test that new files use .org extension when existing files have it."""
-        # Create an existing file with .org extension
-        existing = empty_journal_dir / "20250101.org"
-        existing.write_text("* 2025-01-01\n")
-
-        # Get path for a new date (file doesn't exist)
-        new_date = date(2025, 9, 15)
-        path = get_journal_path(new_date)
-
-        assert path.suffix == ".org"
-        assert path.name == "20250915.org"
-
-    def test_new_file_uses_no_extension_when_existing_files_have_none(
-        self, empty_journal_dir: Path
-    ) -> None:
-        """Test that new files use no extension when existing files have none."""
-        # Create an existing file without extension
-        existing = empty_journal_dir / "20250101"
-        existing.write_text("* 2025-01-01\n")
-
-        # Get path for a new date (file doesn't exist)
-        new_date = date(2025, 9, 15)
-        path = get_journal_path(new_date)
-
-        assert path.suffix == ""
-        assert path.name == "20250915"
+        assert path.name == f"20250915{suffix}"
 
 
 class TestParseJournalEntries:
-    """Tests for parse_journal_entries function."""
+    """Reading a day's entries back out of its file."""
 
-    def test_parse_entries(
+    def test_an_entry_comes_back_whole(
         self, sample_journal_files: JournalFilesInfo
-    ) -> None:
-        """Test parsing entries from a journal file."""
+    ):
+        """
+        GIVEN: A journal file holding a day's entries, one of them tagged
+         WHEN: The file is parsed
+         THEN: Every entry is found, each carrying the time it was written,
+               its headline and its tags -- these are what an entry is looked
+               up and filtered by, so an entry parsed without them is found
+               by nothing
+        """
         entries = parse_journal_entries(sample_journal_files["today_file"])
 
-        assert len(entries) == sample_journal_files["today_entry_count"]
+        with check:
+            assert len(entries) == sample_journal_files["today_entry_count"]
+        with check:
+            assert entries[0].time == "09:00"
+        with check:
+            assert "JIRA-1234" in entries[0].headline
+        with check:
+            assert entries[0].file_date == sample_journal_files[
+                "today"
+            ].strftime("%Y%m%d")
+        with check:
+            assert len([e for e in entries if "daily_summary" in e.tags]) == 1
 
-    def test_parse_entry_fields(
-        self, sample_journal_files: JournalFilesInfo
-    ) -> None:
-        """Test that parsed entries have correct fields."""
-        entries = parse_journal_entries(sample_journal_files["today_file"])
-
-        # Check first entry
-        entry = entries[0]
-        assert entry.time == "09:00"
-        assert "JIRA-1234" in entry.headline
-        assert entry.file_date == sample_journal_files["today"].strftime(
-            "%Y%m%d"
+    def test_the_day_an_entry_belongs_to_ignores_the_file_extension(
+        self, empty_journal_dir: Path
+    ):
+        """
+        GIVEN: A journal file named with a .org extension
+         WHEN: Its entries are parsed
+         THEN: Each reports its day as YYYYMMDD with no extension, since that
+               is the date, not the filename -- carrying ".org" into it would
+               make the same day compare unequal to itself depending on which
+               spelling the file happened to use
+        """
+        journal_file = empty_journal_dir / "20250810.org"
+        journal_file.write_text(
+            "* 2025-08-10\n\n** 14:30 JIRA-1234 An entry\n- Did something\n"
         )
 
-    def test_parse_entry_with_tags(
-        self, sample_journal_files: JournalFilesInfo
-    ) -> None:
-        """Test that tags are correctly parsed."""
-        entries = parse_journal_entries(sample_journal_files["today_file"])
+        (entry,) = parse_journal_entries(journal_file)
 
-        # Find the entry with daily_summary tag
-        tagged_entries = [e for e in entries if "daily_summary" in e.tags]
-        assert len(tagged_entries) == 1
+        assert entry.file_date == "20250810"
 
-    def test_parse_nonexistent_file(self, empty_journal_dir: Path) -> None:
-        """Test parsing a nonexistent file returns empty list."""
-        nonexistent = empty_journal_dir / "19700101"
-        entries = parse_journal_entries(nonexistent)
-
-        assert entries == []
+    def test_a_day_with_no_file_has_no_entries(self, empty_journal_dir: Path):
+        """
+        GIVEN: A date nobody has written anything for
+         WHEN: Its file is parsed
+         THEN: It reads as no entries rather than failing, because most days
+               have no journal file until the first entry is written
+        """
+        assert parse_journal_entries(empty_journal_dir / "19700101") == []
 
 
 class TestCreateJournalEntry:
-    """Tests for create_journal_entry function."""
+    """Writing a new entry into a day."""
 
-    def test_create_entry_in_new_file(self, empty_journal_dir: Path) -> None:
-        """Test creating an entry when no journal file exists."""
+    def test_the_first_entry_of_a_day_starts_the_file(
+        self, empty_journal_dir: Path
+    ):
+        """
+        GIVEN: A day with no journal file yet
+         WHEN: An entry is written for it, with tags
+         THEN: The file is created under that date's own heading, and the
+               entry reads back with its time, headline and tags intact
+
+        The date heading is what makes the file an org document rather than a
+        list of loose entries, and it is written once -- when the day's first
+        entry is.
+        """
         target_date = date(2025, 3, 15)
 
-        result = create_journal_entry(
+        returned_date, entry = create_journal_entry(
             target_date=target_date,
             time_str="10:00",
             headline="First entry of the day",
-            content="- Did something\n- Did something else",
+            content="- Did something",
+            tags=["daily_summary"],
         )
 
-        returned_date, entry = result
-        assert returned_date == target_date
-        assert entry.time == "10:00"
-        assert entry.headline == "First entry of the day"
-
-        # Verify file was created
         journal_file = empty_journal_dir / "20250315"
-        assert journal_file.exists()
+        (written,) = parse_journal_entries(journal_file)
 
-        # Verify entry can be parsed
-        entries = parse_journal_entries(journal_file)
-        assert len(entries) == 1
-        assert entries[0].time == "10:00"
-        assert entries[0].headline == "First entry of the day"
+        with check:
+            assert returned_date == target_date
+        with check:
+            assert journal_file.read_text().startswith("* 2025-03-15")
+        with check:
+            assert (entry.time, entry.headline) == (
+                "10:00",
+                "First entry of the day",
+            )
+        with check:
+            assert (written.time, written.headline) == (
+                "10:00",
+                "First entry of the day",
+            )
+        with check:
+            assert "daily_summary" in written.tags
 
-    def test_create_entry_appends_to_existing(
+    def test_a_later_entry_joins_the_day_already_started(
         self, sample_journal_files: JournalFilesInfo
-    ) -> None:
-        """Test creating an entry appends to existing file."""
-        original_count = sample_journal_files["today_entry_count"]
+    ):
+        """
+        GIVEN: A day that already has entries
+         WHEN: Another is written
+         THEN: It is added after them and the earlier ones are still there,
+               since a journal is appended to through the day and rewriting
+               the file must not cost the morning's entries
+        """
+        before = parse_journal_entries(sample_journal_files["today_file"])
 
         create_journal_entry(
             target_date=sample_journal_files["today"],
@@ -198,46 +226,15 @@ class TestCreateJournalEntry:
         )
 
         entries = parse_journal_entries(sample_journal_files["today_file"])
-        assert len(entries) == original_count + 1
 
-        # New entry should be last
-        assert entries[-1].time == "20:00"
-
-    def test_create_entry_with_tags(self, empty_journal_dir: Path) -> None:
-        """Test creating an entry with tags."""
-        target_date = date(2025, 4, 1)
-
-        create_journal_entry(
-            target_date=target_date,
-            time_str="17:00",
-            headline="End of day",
-            content="- Summary",
-            tags=["daily_summary"],
-        )
-
-        journal_file = empty_journal_dir / "20250401"
-        entries = parse_journal_entries(journal_file)
-
-        assert len(entries) == 1
-        assert "daily_summary" in entries[0].tags
-
-    def test_create_entry_creates_date_header(
-        self, empty_journal_dir: Path
-    ) -> None:
-        """Test that new journal file has proper date header."""
-        target_date = date(2025, 5, 20)
-
-        create_journal_entry(
-            target_date=target_date,
-            time_str="09:00",
-            headline="Test",
-            content="- Content",
-        )
-
-        journal_file = empty_journal_dir / "20250520"
-        content = journal_file.read_text()
-
-        assert content.startswith("* 2025-05-20")
+        with check:
+            assert len(entries) == len(before) + 1
+        with check:
+            assert entries[-1].time == "20:00"
+        with check:
+            assert [e.headline for e in entries[:-1]] == [
+                e.headline for e in before
+            ]
 
 
 class TestFindJournalEntry:
@@ -265,101 +262,95 @@ class TestFindJournalEntry:
             ("14:30", "Second", "Second afternoon task"),
         ],
     )
-    def test_find_by_time_and_headline(
+    def test_an_entry_is_named_by_its_time_and_if_need_be_its_headline(
         self,
         multi_entry_file: Path,
         time_str: str,
         headline: str | None,
         expected_in_headline: str,
-    ) -> None:
-        """Test finding entries by time alone or with headline disambiguation."""
+    ):
+        """
+        GIVEN: A day holding one entry at a unique time and two that share a
+               time
+         WHEN: An entry is looked up by time, and by time plus headline where
+               the time alone is not enough
+         THEN: The intended entry comes back either way, so a caller only has
+               to give the headline when the time does not settle it
+        """
         entry = find_journal_entry(multi_entry_file, time_str, headline)
         assert expected_in_headline in entry.headline
 
-    def test_find_by_time_not_found(self, multi_entry_file: Path) -> None:
-        """Test that finding a nonexistent time raises ValueError."""
-        with pytest.raises(ValueError, match="No journal entry found"):
-            find_journal_entry(multi_entry_file, "23:59")
-
-    def test_find_raises_on_ambiguous_time(
-        self, multi_entry_file: Path
-    ) -> None:
-        """Test that ambiguous time without headline raises ValueError."""
-        with pytest.raises(ValueError, match="Multiple entries"):
-            find_journal_entry(multi_entry_file, "14:30")
+    @pytest.mark.parametrize(
+        "time_str, message",
+        [
+            pytest.param("23:59", "No journal entry found", id="no-entry"),
+            pytest.param("14:30", "Multiple entries", id="two-entries"),
+        ],
+    )
+    def test_a_time_that_does_not_name_one_entry_is_refused(
+        self, multi_entry_file: Path, time_str: str, message: str
+    ):
+        """
+        GIVEN: A time matching no entry, or a time two entries share
+         WHEN: An entry is looked up by it alone
+         THEN: It is refused, saying which of the two happened -- returning
+               the first of several would edit whichever entry happened to be
+               written first
+        """
+        with pytest.raises(ValueError, match=message):
+            find_journal_entry(multi_entry_file, time_str)
 
 
 class TestUpdateJournalEntry:
     """Tests for update_journal_entry function."""
 
-    def test_update_entry_headline(
+    def test_an_update_replaces_what_it_was_given(
         self, sample_journal_files: JournalFilesInfo
-    ) -> None:
-        """Test updating an entry's headline."""
-        entries = parse_journal_entries(sample_journal_files["today_file"])
-        first_entry = entries[0]
+    ):
+        """
+        GIVEN: An existing entry
+         WHEN: It is updated with a new headline, new content and new tags
+         THEN: All three are in the file afterwards, and the entry returned
+               describes the change -- what it was and what it now is
 
-        result = update_journal_entry(
+        The three are set in one call because that is how an edit arrives:
+        someone rewrites the entry. Setting one and silently reverting
+        another is the failure, and testing them apart cannot see it.
+        """
+        entries = parse_journal_entries(sample_journal_files["today_file"])
+        original = entries[0]
+
+        old_entry, new_entry, _ = update_journal_entry(
             file_path=sample_journal_files["today_file"],
-            time_str=first_entry.time,
+            time_str=original.time,
             headline="Updated headline",
-            content=first_entry.content,
-        )
-
-        old_entry, new_entry, _ = result
-        assert old_entry.headline == first_entry.headline
-        assert new_entry.headline == "Updated headline"
-
-        # Verify the update
-        updated_entries = parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
-        assert updated_entries[0].headline == "Updated headline"
-
-    def test_update_entry_content(
-        self, sample_journal_files: JournalFilesInfo
-    ) -> None:
-        """Test updating an entry's content."""
-        entries = parse_journal_entries(sample_journal_files["today_file"])
-        first_entry = entries[0]
-
-        update_journal_entry(
-            file_path=sample_journal_files["today_file"],
-            time_str=first_entry.time,
-            headline=first_entry.headline,
-            content="- New bullet point\n- Another new point",
-        )
-
-        updated_entries = parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
-        assert "New bullet point" in updated_entries[0].content
-
-    def test_update_entry_tags(
-        self, sample_journal_files: JournalFilesInfo
-    ) -> None:
-        """Test updating an entry's tags."""
-        entries = parse_journal_entries(sample_journal_files["today_file"])
-        first_entry = entries[0]
-
-        update_journal_entry(
-            file_path=sample_journal_files["today_file"],
-            time_str=first_entry.time,
-            headline=first_entry.headline,
-            content=first_entry.content,
+            content="- New bullet point",
             tags=["new_tag", "another_tag"],
         )
 
-        updated_entries = parse_journal_entries(
-            sample_journal_files["today_file"]
-        )
-        assert "new_tag" in updated_entries[0].tags
-        assert "another_tag" in updated_entries[0].tags
+        written = parse_journal_entries(sample_journal_files["today_file"])[0]
 
-    def test_update_preserves_other_entries(
+        with check:
+            assert old_entry.headline == original.headline
+        with check:
+            assert new_entry.headline == "Updated headline"
+        with check:
+            assert written.headline == "Updated headline"
+        with check:
+            assert "New bullet point" in written.content
+        with check:
+            assert {"new_tag", "another_tag"} <= set(written.tags)
+
+    def test_updating_one_entry_leaves_the_rest_of_the_day_alone(
         self, sample_journal_files: JournalFilesInfo
-    ) -> None:
-        """Test that updating one entry doesn't affect others."""
+    ):
+        """
+        GIVEN: A day holding several entries
+         WHEN: One of them is updated
+         THEN: The others are unchanged and none has gone -- the whole file
+               is rewritten to change one entry, so every other entry in it
+               is at risk on every edit
+        """
         original_entries = parse_journal_entries(
             sample_journal_files["today_file"]
         )
@@ -388,10 +379,16 @@ class TestUpdateJournalEntry:
     def test_update_preserves_blank_line_separators(
         self, sample_journal_files: JournalFilesInfo
     ) -> None:
-        """Test that updating an entry preserves blank lines between entries.
+        """
+        GIVEN: A day whose entries are separated by blank lines, as org
+               documents are written
+         WHEN: One entry is updated
+         THEN: The blank line before the next entry is still there, so an
+               edit does not slowly compact the file into an unreadable block
 
-        Bug: to_org() strips trailing whitespace, but the old entry range
-        includes trailing blank lines. The splice eats the separator.
+        Rendering an entry strips its trailing whitespace while the range
+        being replaced includes the blank line after it, so the separator is
+        what the splice eats.
         """
         original_entries = parse_journal_entries(
             sample_journal_files["today_file"]
@@ -418,10 +415,16 @@ class TestUpdateJournalEntry:
         )
 
     @pytest.mark.parametrize("filename", ["20250810.org", "20250810"])
-    def test_update_entry_file_date(
+    def test_an_updated_entry_reports_its_day_without_the_extension(
         self, empty_journal_dir: Path, filename: str
-    ) -> None:
-        """Test that file_date is YYYYMMDD regardless of .org extension."""
+    ):
+        """
+        GIVEN: A journal file named with or without the .org extension
+         WHEN: An entry in it is updated
+         THEN: The entry returned reports its day as YYYYMMDD either way,
+               since a caller uses that to address the day again and ".org"
+               is not part of the date
+        """
         journal_file = empty_journal_dir / filename
         journal_file.write_text(
             "* 2025-08-10\n\n** 14:30 Original headline\n- Original content\n"
@@ -460,7 +463,7 @@ class TestUpdateJournalEntry:
         ],
         ids=["change-time", "disambiguate-by-headline"],
     )
-    def test_update_lookup_by_time_and_headline(
+    def test_an_entry_can_be_found_by_one_time_and_given_another(
         self,
         empty_journal_dir: Path,
         existing_time: str | None,
@@ -468,8 +471,17 @@ class TestUpdateJournalEntry:
         new_time: str,
         new_headline: str,
         expected_headlines: list[str],
-    ) -> None:
-        """Test updating entries found by existing_time and/or existing_headline."""
+    ):
+        """
+        GIVEN: A day holding an entry at a unique time and two that share one
+         WHEN: An entry is updated, named by its current time or by its
+               headline, and given a different time
+         THEN: The intended entry changes and its neighbours do not
+
+        The entry is addressed by what it is now and rewritten to what it
+        should be, so the two must not be confused: looking the entry up by
+        its new time would find nothing, or worse, find someone else's.
+        """
         journal_file = empty_journal_dir / "20250810"
         journal_file.write_text(
             "* 2025-08-10\n\n"

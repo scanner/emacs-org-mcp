@@ -1,11 +1,18 @@
-"""Tests for task-related server functions."""
+#!/usr/bin/env python
+#
+"""
+Tests for reading, writing and filing the tasks in tasks.org.
 
-import re
+These are the promises the task tools make about one file: a task can be
+named the several ways a person remembers it, an edit replaces the content
+without disturbing the bookkeeping, and finishing or reopening one files it
+with its peers and stamps when it happened.
+"""
+
 import uuid
 from pathlib import Path
 
 import pytest
-from orgmunge import Org
 from pytest_check import check
 
 from mcp_server.config import global_state
@@ -28,177 +35,202 @@ from tests.conftest import (
 
 
 class TestListTasks:
-    """Tests for list_tasks function."""
+    """Reading a section back out of the file."""
 
-    def test_list_active_tasks(self, sample_tasks_file: TasksFileInfo) -> None:
-        """Test listing tasks from active section."""
-        tasks = list_tasks("Tasks")
+    @pytest.mark.parametrize(
+        "section, status",
+        [
+            pytest.param("Tasks", "TODO", id="active"),
+            pytest.param("Completed Tasks", "DONE", id="completed"),
+        ],
+    )
+    def test_a_section_lists_its_own_tasks_in_full(
+        self, sample_tasks_file: TasksFileInfo, section: str, status: str
+    ):
+        """
+        GIVEN: A tasks.org with tasks filed in both sections
+         WHEN: One section is listed
+         THEN: Every task in it comes back and none from the other, since a
+               section is what separates work in hand from work finished
+          AND: Each task arrives with the fields a caller addresses it by
+               populated, not as a headline alone
+        """
+        expected = {
+            "Tasks": sample_tasks_file["active_count"],
+            "Completed Tasks": sample_tasks_file["completed_count"],
+        }
+        tasks = list_tasks(section)
 
-        assert len(tasks) == sample_tasks_file["active_count"]
-        assert all(t.section == "Tasks" for t in tasks)
-
-    def test_list_completed_tasks(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test listing tasks from completed section."""
-        tasks = list_tasks("Completed Tasks")
-
-        assert len(tasks) == sample_tasks_file["completed_count"]
-        assert all(t.section == "Completed Tasks" for t in tasks)
-        assert all(t.status == "DONE" for t in tasks)
-
-    def test_list_empty_section(self, empty_tasks_file: Path) -> None:
-        """Test listing tasks from an empty section."""
-        tasks = list_tasks("Tasks")
-
-        assert len(tasks) == 0
-
-    def test_task_has_expected_fields(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test that listed tasks have all expected fields populated."""
-        tasks = list_tasks("Tasks")
+        with check:
+            assert len(tasks) == expected[section]
+        with check:
+            assert {task.section for task in tasks} == {section}
+        with check:
+            assert {task.status for task in tasks} == {status}
 
         for task in tasks:
-            assert task.custom_id != ""  # All our test tasks have names
-            assert task.headline != ""
-            assert task.status in ("TODO", "DONE")
-            assert task.section == "Tasks"
-            assert task.content != ""
+            with check:
+                assert task.custom_id and task.headline and task.content, (
+                    f"{task.headline} came back only partly populated"
+                )
+
+    def test_an_empty_section_lists_nothing_rather_than_failing(
+        self, empty_tasks_file: Path
+    ):
+        """
+        GIVEN: A tasks.org whose sections exist but hold no tasks
+         WHEN: One is listed
+         THEN: It comes back empty, because a section with nothing in it is
+               an ordinary state and not a missing section
+        """
+        assert list_tasks("Tasks") == []
 
 
 class TestFindTask:
-    """Tests for find_task function."""
+    """Naming one task out of the file."""
 
-    def test_find_by_custom_id(self, sample_tasks_file: TasksFileInfo) -> None:
-        """Test finding a task by its :CUSTOM_ID: value."""
-        result = find_task("task-jira-1234")
+    @pytest.mark.parametrize(
+        "identifier",
+        ["task-jira-1234", "JIRA-1234", "authentication"],
+        ids=["custom-id", "ticket", "headline-substring"],
+    )
+    def test_a_task_answers_to_any_of_the_things_that_name_it(
+        self, sample_tasks_file: TasksFileInfo, identifier: str
+    ):
+        """
+        GIVEN: A task carrying a :CUSTOM_ID:, a ticket in its headline, and
+               words a person would remember it by
+         WHEN: It is looked up by any one of them
+         THEN: The same task comes back, so a caller can name it the way they
+               happen to have it rather than looking the id up first
+        """
+        task, _, _, _ = find_task(identifier)
 
-        assert result is not None
-        task, heading, section, org = result
         assert task.custom_id == "task-jira-1234"
-        assert "JIRA-1234" in task.headline
 
-    def test_find_by_ticket_id(self, sample_tasks_file: TasksFileInfo) -> None:
-        """Test finding a task by JIRA ticket ID in headline."""
-        result = find_task("JIRA-1234")
-
-        assert result is not None
-        task, _, _, _ = result
-        assert "JIRA-1234" in task.headline
-
-    def test_find_by_headline_substring(
+    def test_a_task_is_found_wherever_it_is_filed(
         self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test finding a task by partial headline match."""
-        result = find_task("new feature")
+    ):
+        """
+        GIVEN: A task in the completed section
+         WHEN: It is looked up without naming a section
+         THEN: It is found, and reports the section it is actually in --
+               finishing a task must not make it unaddressable
+        """
+        task, _, _, _ = find_task("task-jira-4321")
 
-        assert result is not None
-        task, _, _, _ = result
-        assert "new feature" in task.headline.lower()
+        with check:
+            assert task.status == "DONE"
+        with check:
+            assert task.section == "Completed Tasks"
 
-    def test_find_in_specific_section(
+    def test_naming_a_section_looks_only_there(
         self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test finding a task in a specific section only."""
-        # This task is in Active section
-        #
-        result = find_task("task-jira-1234", section="Tasks")
-        assert result is not None
+    ):
+        """
+        GIVEN: A task in the active section
+         WHEN: It is looked up with the search restricted to the completed
+               section
+         THEN: It is not found, since a caller who named a section is asking
+               about that section and not for the nearest match anywhere
+        """
+        find_task("task-jira-1234", section="Tasks")
 
-        # Should not find it in Completed section
-        #
         with pytest.raises(ValueError, match="Could not find task"):
-            result = find_task("task-jira-1234", section="Completed Tasks")
+            find_task("task-jira-1234", section="Completed Tasks")
 
-    def test_find_nonexistent_task(
+    def test_a_task_that_is_not_there_is_reported_as_missing(
         self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test that finding a nonexistent task returns None."""
+    ):
+        """
+        GIVEN: An identifier matching no task
+         WHEN: It is looked up
+         THEN: It raises rather than returning nothing, so a caller cannot
+               carry on and write against a task that does not exist
+        """
         with pytest.raises(ValueError, match="Could not find task"):
             find_task("task-does-not-exist")
 
-    def test_find_completed_task(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test finding a task in the completed section."""
-        result = find_task("task-jira-4321")
-
-        assert result is not None
-        task, _, _, _ = result
-        assert task.status == "DONE"
-        assert task.section == "Completed Tasks"
-
 
 class TestCreateTask:
-    """Tests for create_task function."""
+    """Adding a task to the file."""
 
-    def test_create_task_in_active_section(
-        self, empty_tasks_file: Path
-    ) -> None:
-        """Test creating a new task in the Active section."""
-        new_task = make_task(
-            headline="New task headline",
-            custom_id="task-new",
-            description="This is a new task",
+    @pytest.mark.parametrize(
+        "section, status",
+        [
+            pytest.param("Tasks", "TODO", id="active"),
+            pytest.param("Completed Tasks", "DONE", id="completed"),
+        ],
+    )
+    def test_a_task_is_filed_in_the_section_it_was_addressed_to(
+        self, empty_tasks_file: Path, section: str, status: str
+    ):
+        """
+        GIVEN: A task entry and the section it belongs in
+         WHEN: It is created
+         THEN: It lands in that section and is addressable there
+
+        Creating straight into the completed section is not a curiosity: it
+        is how work already finished gets recorded after the fact.
+        """
+        returned_section, content = create_task(
+            section, make_task("New task headline", "task-new", status=status)
         )
 
-        result = create_task("Tasks", new_task)
+        (task,) = list_tasks(section)
 
-        section, content = result
-        assert section == "Tasks"
-        assert "New task headline" in content
+        with check:
+            assert returned_section == section
+        with check:
+            assert "New task headline" in content
+        with check:
+            assert task.custom_id == "task-new"
+        with check:
+            assert task.status == status
 
-        # Verify task was added
-        tasks = list_tasks("Tasks")
-        assert len(tasks) == 1
-        assert tasks[0].custom_id == "task-new"
-
-    def test_create_task_in_completed_section(
-        self, empty_tasks_file: Path
-    ) -> None:
-        """Test creating a task directly in the Completed section."""
-        done_task = make_task(
-            headline="Already done",
-            custom_id="task-already-done",
-            status="DONE",
-        )
-
-        create_task("Completed Tasks", done_task)
-
-        tasks = list_tasks("Completed Tasks")
-        assert len(tasks) == 1
-        assert tasks[0].status == "DONE"
-
-    def test_create_preserves_existing_tasks(
+    def test_creating_a_task_leaves_the_others_alone(
         self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test that creating a task doesn't affect existing tasks."""
-        original_count = sample_tasks_file["active_count"]
+    ):
+        """
+        GIVEN: A tasks.org already holding tasks
+         WHEN: Another is created
+         THEN: The section holds exactly one more than it did -- the write
+               rewrites the whole file, so the tasks already in it are as
+               exposed as the one being added
+        """
+        before = {task.custom_id for task in list_tasks("Tasks")}
 
-        new_task = make_task("Another task", "task-another")
-        create_task("Tasks", new_task)
+        create_task("Tasks", make_task("Another task", "task-another"))
 
-        tasks = list_tasks("Tasks")
-        assert len(tasks) == original_count + 1
+        assert {task.custom_id for task in list_tasks("Tasks")} == (
+            before | {"task-another"}
+        )
 
-    def test_create_invalid_section_raises(
+    def test_creating_into_a_section_that_does_not_exist_is_refused(
         self, empty_tasks_file: Path
-    ) -> None:
-        """Test that creating in a nonexistent section raises ValueError."""
-        new_task = make_task("Task", "task-x")
-
+    ):
+        """
+        GIVEN: A section name matching no heading in the file
+         WHEN: A task is created into it
+         THEN: It is refused, rather than the section being invented or the
+               task filed somewhere the caller did not ask for
+        """
         with pytest.raises(ValueError, match="Section not found"):
-            create_task("Nonexistent Section", new_task)
+            create_task("Nonexistent Section", make_task("Task", "task-x"))
 
 
 class TestUpdateTask:
-    """Tests for update_task function."""
+    """Replacing a task's content, and what that does to where it is filed."""
 
-    def test_update_task_content(
+    def test_an_edit_that_does_not_finish_a_task_leaves_it_where_it_is(
         self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test updating a task's content while keeping status."""
+    ):
+        """
+        GIVEN: An active task and a replacement for it that is still TODO
+         WHEN: It is updated
+         THEN: The new content is in place and the task has not moved, since
+               editing a task says nothing about whether it is finished
+        """
         updated_task = make_task(
             headline="JIRA-1234 Updated headline",
             custom_id="task-jira-1234",
@@ -221,10 +253,16 @@ class TestUpdateTask:
         assert "Updated headline" in task.headline
         assert "Updated description" in task.content
 
-    def test_update_moves_to_completed_on_done(
+    def test_marking_a_task_done_files_it_with_the_finished_work(
         self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test that updating status to DONE moves task to Completed section."""
+    ):
+        """
+        GIVEN: An active task and a replacement marking it DONE
+         WHEN: It is updated
+         THEN: It moves to the completed section and is gone from the active
+               one, so the active list stays a list of what is still to do
+               without anyone having to move it by hand
+        """
         original_active = len(list_tasks("Tasks"))
         original_completed = len(list_tasks("Completed Tasks"))
 
@@ -252,10 +290,15 @@ class TestUpdateTask:
         found = find_task("task-jira-1234", section="Completed Tasks")
         assert found is not None
 
-    def test_update_nonexistent_task_raises(
+    def test_updating_a_task_that_is_not_there_is_refused(
         self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test that updating a nonexistent task raises ValueError."""
+    ):
+        """
+        GIVEN: An identifier matching no task
+         WHEN: An update is submitted for it
+         THEN: It is refused rather than creating the task, which would file
+               a caller's correction as new work
+        """
         task = make_task("X", "task-x")
 
         with pytest.raises(ValueError, match="Could not find"):
@@ -263,157 +306,132 @@ class TestUpdateTask:
 
 
 class TestMoveTask:
-    """Tests for move_task function."""
+    """Filing a task under the other section."""
 
-    def test_move_task_to_completed(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test moving a task from Active to Completed."""
-        result = move_task(
-            "task-jira-1234",
-            "Tasks",
-            "Completed Tasks",
+    @pytest.mark.parametrize(
+        "identifier, source, destination",
+        [
+            pytest.param(
+                "task-jira-1234", "Tasks", "Completed Tasks", id="finishing"
+            ),
+            pytest.param(
+                "task-jira-4321", "Completed Tasks", "Tasks", id="reopening"
+            ),
+        ],
+    )
+    def test_a_task_moves_and_leaves_nothing_behind(
+        self,
+        sample_tasks_file: TasksFileInfo,
+        identifier: str,
+        source: str,
+        destination: str,
+    ):
+        """
+        GIVEN: A task filed in one section
+         WHEN: It is moved to the other
+         THEN: It is findable in the section it went to and gone from the one
+               it left -- a move that copies leaves the same task in two
+               sections, where a later edit reaches only one of them
+          AND: Both directions work, since reopening finished work is as
+               ordinary as finishing it
+        """
+        headline, from_section, to_section = move_task(
+            identifier, source, destination
         )
 
-        headline, from_section, to_section = result
-        assert "JIRA-1234" in headline
-        assert from_section == "Tasks"
-        assert to_section == "Completed Tasks"
-
-        # Verify it's in the new section
-        found = find_task("task-jira-1234", section="Completed Tasks")
-        assert found is not None
-
-        # Verify it's not in the old section
+        with check:
+            assert (from_section, to_section) == (source, destination)
+        with check:
+            assert find_task(identifier, section=destination)
+        with check:
+            assert headline
         with pytest.raises(ValueError, match="Could not find"):
-            found = find_task("task-jira-1234", section="Tasks")
+            find_task(identifier, section=source)
 
-    def test_move_task_to_active(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test moving a task from Completed back to Active."""
-        result = move_task(
-            "task-jira-4321",
-            "Completed Tasks",
-            "Tasks",
-        )
-
-        headline, from_section, to_section = result
-        assert "JIRA-4321" in headline
-        assert from_section == "Completed Tasks"
-        assert to_section == "Tasks"
-
-        found = find_task("task-jira-4321", section="Tasks")
-        assert found is not None
-
-    def test_move_task_without_properties_drawer(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
+    @pytest.mark.parametrize(
+        "entry, identifier, missing",
+        [
+            pytest.param(
+                "** DONE Task without properties\n"
+                "\n"
+                "*** Description\n"
+                "This task has no properties drawer at all.\n",
+                "Task without properties",
+                "custom_id",
+                id="no-drawer-at-all",
+            ),
+            pytest.param(
+                "** DONE Task missing CLOSED property\n"
+                ":PROPERTIES:\n"
+                "   :CUSTOM_ID: task-no-closed\n"
+                ":END:\n"
+                "\n"
+                "*** Description\n"
+                "This task is DONE but has no CLOSED timestamp.\n",
+                "task-no-closed",
+                "closed",
+                id="no-closed-timestamp",
+            ),
+        ],
+    )
+    def test_a_task_written_before_the_conventions_still_moves(
+        self, temp_org_dir: Path, entry: str, identifier: str, missing: str
+    ):
         """
-        Test moving a task from Completed to Active when it has no :PROPERTIES: drawer.
-
-        This edge case can occur with older tasks or manually created tasks.
+        GIVEN: A finished task lacking a property the server would have
+               written -- no drawer at all, or a drawer with no :CLOSED: --
+               as a hand-written or long-lived task has
+         WHEN: It is moved back to the active section
+         THEN: The move succeeds, because a property this server adds is not
+               something it may require of a file it did not write
+          AND: The absent property still reads as absent afterwards, so the
+               move does not invent a value to fill it in
         """
-        # Create a task without a :PROPERTIES: drawer by directly adding it to the file
-        task_without_props = """** DONE Task without properties
+        (temp_org_dir / "tasks.org").write_text(make_tasks_org([], [entry]))
 
-*** Description
-This task has no properties drawer at all.
-"""
-        # Add it to the Completed section
-        content = global_state.config.tasks_file.read_text()
-        content = re.sub(
-            rf"(\* {'Completed Tasks'}\n)",
-            rf"\1{task_without_props}\n",
-            content,
+        _, from_section, to_section = move_task(
+            identifier, "Completed Tasks", "Tasks"
         )
-        global_state.config.tasks_file.write_text(content)
+        task, _, _, _ = find_task(identifier, section="Tasks")
 
-        # Move the task to Active section - should not raise an error
-        result = move_task(
-            "Task without properties",  # Find by headline
-            "Completed Tasks",
-            "Tasks",
-        )
+        with check:
+            assert (from_section, to_section) == ("Completed Tasks", "Tasks")
+        with check:
+            assert getattr(task, missing) == ""
 
-        headline, from_section, to_section = result
-        assert "Task without properties" in headline
-        assert from_section == "Completed Tasks"
-        assert to_section == "Tasks"
-
-        # Verify it's in the Active section now
-        found = find_task("Task without properties", section="Tasks")
-        assert found is not None
-        task, _, _, _ = found
-        # An absent property reads as empty, never None: Task declares
-        # these `str` and find_task coerces at that boundary.
-        assert task.custom_id == ""
-
-    def test_move_task_missing_closed_property(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """
-        Test moving a task from Completed to Active when it's missing :CLOSED: property.
-
-        This can happen if a task was manually marked DONE without using org-mode's
-        proper commands, or if it was created before CLOSED tracking was implemented.
-        """
-        # Create a DONE task with :PROPERTIES: but no :CLOSED:
-        task_no_closed = """** DONE Task missing CLOSED property
-:PROPERTIES:
-   :CUSTOM_ID: task-no-closed
-:END:
-
-*** Description
-This task is DONE but has no CLOSED timestamp.
-"""
-        # Add it to the Completed section
-        content = global_state.config.tasks_file.read_text()
-        content = re.sub(
-            rf"(\* {'Completed Tasks'}\n)",
-            rf"\1{task_no_closed}\n",
-            content,
-        )
-        global_state.config.tasks_file.write_text(content)
-
-        # Move the task to Active section - should not raise an error
-        result = move_task(
-            "task-no-closed",
-            "Completed Tasks",
-            "Tasks",
-        )
-
-        headline, from_section, to_section = result
-        assert "Task missing CLOSED property" in headline
-        assert from_section == "Completed Tasks"
-        assert to_section == "Tasks"
-
-        # Verify it's in the Active section now
-        found = find_task("task-no-closed", section="Tasks")
-        assert found is not None
-        task, _, _, _ = found
-        assert task.custom_id == "task-no-closed"
-        # move_task doesn't clear :CLOSED:, so one that never had it
-        # still doesn't.
-        assert task.closed == ""
-
-    def test_move_nonexistent_task_raises(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test that moving a nonexistent task raises ValueError."""
-        with pytest.raises(ValueError, match="Could not find"):
-            move_task(
+    @pytest.mark.parametrize(
+        "identifier, destination, message",
+        [
+            pytest.param(
                 "task-nonexistent",
-                "Tasks",
                 "Completed Tasks",
-            )
-
-    def test_move_to_invalid_section_raises(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """Test that moving to an invalid section raises ValueError."""
-        with pytest.raises(ValueError, match="not found"):
-            move_task("task-jira-1234", "Tasks", "Invalid Section")
+                "Could not find",
+                id="no-such-task",
+            ),
+            pytest.param(
+                "task-jira-1234",
+                "Invalid Section",
+                "not found",
+                id="no-such-section",
+            ),
+        ],
+    )
+    def test_a_move_that_cannot_be_made_is_refused_by_name(
+        self,
+        sample_tasks_file: TasksFileInfo,
+        identifier: str,
+        destination: str,
+        message: str,
+    ):
+        """
+        GIVEN: A move naming a task that does not exist, or a section that
+               does not
+         WHEN: It is attempted
+         THEN: It is refused naming which of the two was not found, rather
+               than reporting success for a move that never happened
+        """
+        with pytest.raises(ValueError, match=message):
+            move_task(identifier, "Tasks", destination)
 
 
 class TestSearchTasks:
@@ -504,178 +522,147 @@ class TestSearchTasks:
 
 
 class TestFormatSimpleDiff:
-    """Tests for format_simple_diff function."""
+    """
+    Tests for the diff a tool shows alongside what it changed.
 
-    def test_diff_shows_additions(self) -> None:
-        """Test that diff shows added lines."""
-        old = "line1\nline2"
-        new = "line1\nline2\nline3"
+    This is what a caller reads to see whether an edit did what they meant,
+    so it has to name every line that moved and say so plainly when none did.
+    """
 
-        diff = format_simple_diff(old, new)
+    @pytest.mark.parametrize(
+        "old, new, expected",
+        [
+            pytest.param(
+                "line1\nline2",
+                "line1\nline2\nline3",
+                ["+ line3"],
+                id="addition",
+            ),
+            pytest.param(
+                "line1\nline2\nline3",
+                "line1\nline2",
+                ["− line3"],
+                id="deletion",
+            ),
+            pytest.param(
+                "- [ ] Pending item",
+                "- [X] Pending item",
+                ["− - [ ] Pending item", "+ - [X] Pending item"],
+                id="replacement",
+            ),
+            pytest.param(
+                "line1\nline2", "line1\nline2", ["no changes"], id="unchanged"
+            ),
+        ],
+    )
+    def test_the_diff_names_every_line_that_moved(
+        self, old: str, new: str, expected: list[str]
+    ):
+        """
+        GIVEN: Two versions of some content
+         WHEN: They are diffed for display
+         THEN: An added line is marked +, a removed one −, and a changed
+               line appears as both -- so a caller sees what the edit did to
+               each line rather than being told only that something changed
+          AND: Identical content says so, since an empty diff is otherwise
+               indistinguishable from a diff that failed to run
+        """
+        diff = format_simple_diff(old, new).lower()
 
-        assert "+ line3" in diff
+        for fragment in expected:
+            with check:
+                assert fragment.lower() in diff
 
-    def test_diff_shows_deletions(self) -> None:
-        """Test that diff shows removed lines."""
-        old = "line1\nline2\nline3"
-        new = "line1\nline2"
 
-        diff = format_simple_diff(old, new)
+def high_level_checklist() -> str:
+    """The High Level Tasks section as it stands in the file."""
+    text = global_state.config.tasks_file.read_text()
+    body = text.split("* High Level Tasks (in order)", 1)[1]
 
-        assert "− line3" in diff
-
-    def test_diff_shows_replacements(self) -> None:
-        """Test that diff shows changed lines."""
-        old = "- [ ] Pending item"
-        new = "- [X] Pending item"
-
-        diff = format_simple_diff(old, new)
-
-        assert "− - [ ] Pending item" in diff
-        assert "+ - [X] Pending item" in diff
-
-    def test_diff_no_changes(self) -> None:
-        """Test diff when content is identical."""
-        content = "line1\nline2"
-
-        diff = format_simple_diff(content, content)
-
-        assert "no changes" in diff.lower()
+    return body.split("\n* ", 1)[0]
 
 
 class TestHighLevelTasksChecklist:
-    """Tests for High Level Tasks checklist maintenance."""
+    """
+    The checklist that summarises the task list.
 
-    def test_create_task_adds_to_high_level_checklist(
+    It is a second record of the same work, so what it is really promising is
+    that it keeps up: a task added or finished without its line moving leaves
+    the summary saying something the task list contradicts.
+    """
+
+    def test_a_new_task_joins_the_checklist_under_its_own_description(
         self, empty_tasks_file: Path
-    ) -> None:
+    ):
         """
-        Given an empty tasks file
-        When a task is created
-        Then it should be added to the High Level Tasks checklist
+        GIVEN: A new task whose headline leads with a ticket
+         WHEN: It is created
+         THEN: An unticked line for it appears in the checklist, described by
+               what the work is rather than by its ticket -- the checklist is
+               read top to bottom to decide what to do next, and a column of
+               ticket numbers does not answer that
         """
-        new_task = make_task(
-            headline="GH-123 Implement new feature",
-            custom_id="task-gh-123",
+        create_task(
+            "Tasks",
+            make_task("JIRA-456 Refactor payment module", "task-jira-456"),
         )
+        checklist = high_level_checklist()
 
-        create_task("Tasks", new_task)
+        with check:
+            assert "- [ ] Refactor payment module" in checklist
+        with check:
+            assert "JIRA-456" not in checklist
 
-        # Read the file and verify checklist was updated
-        org = Org(str(global_state.config.tasks_file))
-        high_level_section = None
-        for heading in org.get_all_headings():
-            if heading.headline.level == 1:
-                title = (
-                    heading.headline.title
-                    if hasattr(heading.headline, "title")
-                    else str(heading.headline)
-                )
-                if "High Level Tasks (in order)" in title:
-                    high_level_section = heading
-                    break
-
-        assert high_level_section is not None
-        assert "- [ ] Implement new feature" in high_level_section.body
-
-    def test_update_task_marks_checklist_done(
+    def test_finishing_a_task_ticks_its_line(
         self, sample_tasks_file: TasksFileInfo
-    ) -> None:
+    ):
         """
-        Given a task in the active section
-        When the task is marked as DONE
-        Then the High Level Tasks checklist should mark it as complete
+        GIVEN: An active task with a line in the checklist
+         WHEN: It is marked DONE
+         THEN: Its line is ticked, so the summary and the task list agree on
+               what is finished
         """
-        # Mark an existing task as done
-        done_task = make_task(
-            headline="JIRA-1234 Fix authentication bug",
-            custom_id="task-jira-1234",
-            status="DONE",
+        update_task(
+            "task-jira-1234",
+            make_task(
+                "JIRA-1234 Fix authentication bug",
+                "task-jira-1234",
+                status="DONE",
+            ),
         )
 
-        update_task("task-jira-1234", done_task)
-
-        # Read the file and verify checklist was updated
-        org = Org(str(global_state.config.tasks_file))
-        high_level_section = None
-        for heading in org.get_all_headings():
-            if heading.headline.level == 1:
-                title = (
-                    heading.headline.title
-                    if hasattr(heading.headline, "title")
-                    else str(heading.headline)
-                )
-                if "High Level Tasks (in order)" in title:
-                    high_level_section = heading
-                    break
-
-        assert high_level_section is not None
-        assert "- [X] Fix authentication bug" in high_level_section.body
-
-    def test_high_level_checklist_strips_ticket_id(
-        self, empty_tasks_file: Path
-    ) -> None:
-        """
-        Given a task with a ticket ID in the headline
-        When the task is created
-        Then the High Level Tasks checklist should not include the ticket ID
-        """
-        new_task = make_task(
-            headline="JIRA-456 Refactor payment module",
-            custom_id="task-jira-456",
-        )
-
-        create_task("Tasks", new_task)
-
-        # Read the file and verify checklist strips ticket ID
-        org = Org(str(global_state.config.tasks_file))
-        high_level_section = None
-        for heading in org.get_all_headings():
-            if heading.headline.level == 1:
-                title = (
-                    heading.headline.title
-                    if hasattr(heading.headline, "title")
-                    else str(heading.headline)
-                )
-                if "High Level Tasks (in order)" in title:
-                    high_level_section = heading
-                    break
-
-        assert high_level_section is not None
-        assert "- [ ] Refactor payment module" in high_level_section.body
-        assert "JIRA-456" not in high_level_section.body
+        assert "- [X] Fix authentication bug" in high_level_checklist()
 
 
 class TestUUIDGeneration:
     """Tests for UUID generation when creating tasks."""
 
-    def test_create_task_generates_uuid(self, empty_tasks_file: Path) -> None:
-        """
-        Given a task entry without a :PROPERTIES: drawer
-        When the task is created
-        Then a UUID should be generated and added to :PROPERTIES:
-        """
-        new_task = make_task(
-            headline="Task without UUID",
-            custom_id="task-no-uuid",
-        )
-
-        create_task("Tasks", new_task)
-
-        # Verify the task has a UUID
-        tasks = list_tasks("Tasks")
-        assert len(tasks) == 1
-        assert tasks[0].id != ""
-        assert len(tasks[0].id) == 36  # Standard UUID format
-        assert tasks[0].id == tasks[0].id.upper()  # Should be uppercase
-
-    def test_create_task_preserves_existing_uuid(
+    def test_a_task_created_without_one_is_given_a_real_uuid(
         self, empty_tasks_file: Path
-    ) -> None:
+    ):
         """
-        Given a task entry with an existing :ID: in :PROPERTIES:
-        When the task is created
-        Then the existing UUID should be preserved
+        GIVEN: A task entry carrying no :ID:
+         WHEN: The task is created
+         THEN: It is given a UUID4, uppercased the way org writes them, so
+               org-mode's own id machinery can address it
+        """
+        create_task("Tasks", make_task("Task without UUID", "task-no-uuid"))
+
+        (task,) = list_tasks("Tasks")
+
+        with check:
+            assert uuid.UUID(task.id).version == 4
+        with check:
+            assert task.id == task.id.upper()
+
+    def test_a_task_that_brings_its_own_uuid_keeps_it(
+        self, empty_tasks_file: Path
+    ):
+        """
+        GIVEN: A task entry that already names an :ID:
+         WHEN: The task is created
+         THEN: That id is kept, since it is how anything already referring to
+               this task finds it -- minting a fresh one would orphan those
         """
         existing_uuid = "12345678-ABCD-1234-ABCD-123456789012"
         task_with_uuid = f"""** TODO Task with UUID
@@ -695,320 +682,228 @@ Task description here.
         assert len(tasks) == 1
         assert tasks[0].id == existing_uuid
 
-    def test_generated_uuid_is_valid(self, empty_tasks_file: Path) -> None:
-        """
-        Given a new task without UUID
-        When the task is created
-        Then the generated UUID should be a valid UUID4
-        """
-
-        new_task = make_task(
-            headline="Another task",
-            custom_id="task-another",
-        )
-
-        create_task("Tasks", new_task)
-
-        tasks = list_tasks("Tasks")
-        assert len(tasks) == 1
-
-        # Verify it's a valid UUID by parsing it
-        try:
-            parsed_uuid = uuid.UUID(tasks[0].id)
-            assert parsed_uuid.version == 4  # Should be UUID4
-        except ValueError:
-            pytest.fail(f"Generated ID is not a valid UUID: {tasks[0].id}")
-
 
 class TestTaskIDExtraction:
-    """Tests for :ID: field extraction from :PROPERTIES: drawer."""
+    """The :ID: on disk is the :ID: a reader hands back."""
 
-    def test_list_tasks_populates_id_field(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
+    @pytest.mark.parametrize(
+        "read",
+        [
+            pytest.param(lambda: list_tasks("Tasks")[0], id="list_tasks"),
+            pytest.param(lambda: find_task("task-with-id")[0], id="find_task"),
+        ],
+    )
+    def test_the_id_in_the_drawer_survives_the_trip_out(
+        self, temp_org_dir: Path, read
+    ):
         """
-        Given tasks with :PROPERTIES: drawer containing :ID:
-        When list_tasks is called
-        Then each task should have the id field populated
+        GIVEN: A task whose drawer names an :ID:
+         WHEN: It is read back, by listing its section or by looking it up
+         THEN: It carries that same id either way
+
+        Both readers build their own Task, so an id read correctly by one and
+        dropped by the other is the shape this goes wrong in -- which is why
+        it is asserted of each rather than of whichever came to hand.
         """
-        # Create a task with an explicit UUID to test
-        task_with_id = """** TODO Task with explicit ID
-:PROPERTIES:
-   :ID:       TEST-UUID-1234-5678-90AB-CDEF12345678
-   :CUSTOM_ID: task-with-id
-:END:
-
-*** Description
-This task has an explicit ID.
-"""
-        # Add it to the file
-        content = global_state.config.tasks_file.read_text()
-
-        content = re.sub(
-            rf"(\* {'Tasks'}\n)",
-            rf"\1{task_with_id}\n",
-            content,
-        )
-        global_state.config.tasks_file.write_text(content)
-
-        tasks = list_tasks("Tasks")
-
-        # Find the task we added
-        task_with_explicit_id = next(
-            (t for t in tasks if t.custom_id == "task-with-id"), None
-        )
-        assert task_with_explicit_id is not None
-        assert (
-            task_with_explicit_id.id == "TEST-UUID-1234-5678-90AB-CDEF12345678"
+        (temp_org_dir / "tasks.org").write_text(
+            make_tasks_org(
+                [
+                    make_task(
+                        headline="Task with explicit ID",
+                        custom_id="task-with-id",
+                        task_id="C5045326-9DC8-4F1E-A895-8895720DD928",
+                    )
+                ],
+                [],
+            )
         )
 
-    def test_find_task_populates_id_field(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """
-        Given a task with :PROPERTIES: drawer containing :ID:
-        When find_task is called
-        Then the returned task should have the id field populated
-        """
-        # Create a task with an explicit UUID
-        task_with_id = """** TODO Another task with ID
-:PROPERTIES:
-   :ID:       FIND-UUID-ABCD-1234-5678-90ABCDEF1234
-   :CUSTOM_ID: task-find-by-id
-:END:
-
-*** Description
-Finding this task.
-"""
-        # Add it to the file
-        content = global_state.config.tasks_file.read_text()
-
-        content = re.sub(
-            rf"(\* {'Tasks'}\n)",
-            rf"\1{task_with_id}\n",
-            content,
-        )
-        global_state.config.tasks_file.write_text(content)
-
-        result = find_task("task-find-by-id")
-
-        assert result is not None
-        task, _, _, _ = result
-        assert task.id == "FIND-UUID-ABCD-1234-5678-90ABCDEF1234"
+        assert read().id == "C5045326-9DC8-4F1E-A895-8895720DD928"
 
 
 class TestTaskTimestamps:
-    """Tests for task timestamp properties (CREATED, MODIFIED, CLOSED)."""
+    """
+    When each timestamp is written, and in which of org's two forms.
 
-    def test_create_task_sets_created_timestamp(
+    The bracket is not decoration. An active timestamp ``<...>`` is one org
+    puts on the agenda; an inactive ``[...]`` is a record that something
+    happened. So :CREATED: and :CLOSED: are active and :MODIFIED: is not --
+    every edit landing on the agenda would bury the dates that matter.
+    """
+
+    def test_each_timestamp_is_written_at_its_moment_in_org_s_own_form(
         self, empty_tasks_file: Path
-    ) -> None:
+    ):
         """
-        Given a new task
-        When the task is created
-        Then :CREATED: timestamp should be set with active timestamp format
+        GIVEN: A task created, then edited, then finished
+         WHEN: The drawer is read after each step
+         THEN: :CREATED: is stamped at creation, :MODIFIED: at the edit and
+               :CLOSED: when it is finished, each only once its moment has
+               come
+          AND: :CREATED: and :CLOSED: are active timestamps and :MODIFIED: is
+               inactive, so finishing a task shows on the agenda and merely
+               editing one does not
         """
-        new_task = make_task(
-            headline="New task",
-            custom_id="task-new",
+        create_task("Tasks", make_task("Task", "task-x"))
+        (created,) = list_tasks("Tasks")
+
+        with check:
+            assert created.created.startswith("<") and created.created.endswith(
+                ">"
+            )
+        with check:
+            assert created.closed == "", (
+                "nothing is closed the moment it is made"
+            )
+
+        update_task("task-x", make_task("Task, revised", "task-x"))
+        edited, _, _, _ = find_task("task-x")
+
+        with check:
+            assert edited.modified.startswith("[") and edited.modified.endswith(
+                "]"
+            )
+        with check:
+            assert edited.closed == "", "an edit is not a completion"
+
+        update_task(
+            "task-x", make_task("Task, revised", "task-x", status="DONE")
         )
+        finished, _, _, _ = find_task("task-x")
 
-        create_task("Tasks", new_task)
+        with check:
+            assert finished.closed.startswith("<") and finished.closed.endswith(
+                ">"
+            )
 
-        # Verify the task has :CREATED: timestamp
-        tasks = list_tasks("Tasks")
-        assert len(tasks) == 1
-        assert tasks[0].created != ""
-        # Active timestamp format: <YYYY-MM-DD DDD HH:MM>
-        assert tasks[0].created.startswith("<")
-        assert tasks[0].created.endswith(">")
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            pytest.param(
+                make_task("Finished work", "task-reopen", status="DONE"),
+                id="closed-was-never-set",
+            ),
+            pytest.param(None, id="closed-was-set-by-finishing-it"),
+        ],
+    )
+    def test_reopening_a_task_leaves_it_with_no_closed_timestamp(
+        self, temp_org_dir: Path, entry: str | None
+    ):
+        """
+        GIVEN: A finished task, either one this server closed or one written
+               by hand that never carried a :CLOSED: at all
+         WHEN: It is reopened
+         THEN: It carries no :CLOSED:, and the property is gone from the
+               drawer rather than left blank -- a date saying it was finished
+               contradicts the state saying it is not
+          AND: Reopening the hand-written one does not fail for want of a
+               property to clear
 
-    def test_update_task_sets_modified_timestamp(
+        The two are checked together because the clearing is one line, and
+        the way it breaks is by assuming the property is there to remove.
+        """
+        # `None` means: let the server set :CLOSED: itself, by finishing a
+        # task that starts out open. The other case is a DONE task that never
+        # had one, which is how a hand-written or long-lived task arrives.
+        (temp_org_dir / "tasks.org").write_text(
+            make_tasks_org(
+                [entry or make_task("Finished work", "task-reopen")], []
+            )
+        )
+        if entry is None:
+            update_task(
+                "task-reopen",
+                make_task("Finished work", "task-reopen", status="DONE"),
+            )
+            assert find_task("task-reopen")[0].closed, "fixture"
+
+        update_task("task-reopen", make_task("Finished work", "task-reopen"))
+        task, _, _, _ = find_task("task-reopen")
+
+        with check:
+            assert task.status == "TODO"
+        with check:
+            assert task.closed == ""
+        with check:
+            assert "CLOSED" not in task.properties
+        with check:
+            assert task.modified, "reopening is an edit and is recorded as one"
+
+    def test_reopening_with_the_drawer_it_was_given_drops_the_closed_date(
+        self, temp_org_dir: Path
+    ):
+        """
+        GIVEN: A finished task, and a caller who read it, changed DONE back to
+               TODO, and submitted the whole entry back -- :CLOSED: line and
+               all, since that is what they were handed
+         WHEN: The update is applied
+         THEN: :CLOSED: is gone, because the status the caller sent is the
+               instruction and the stale date they copied along with it is not
+
+        The other reopening path never carries a :CLOSED: to begin with, so
+        this is the one that needs the property actively removed rather than
+        merely not copied forward.
+        """
+        (temp_org_dir / "tasks.org").write_text(
+            make_tasks_org([make_task("Finished work", "task-reopen")], [])
+        )
+        update_task(
+            "task-reopen",
+            make_task("Finished work", "task-reopen", status="DONE"),
+        )
+        closed_at = find_task("task-reopen")[0].closed
+        assert closed_at, "fixture"
+
+        update_task(
+            "task-reopen",
+            f"** TODO Finished work\n"
+            f":PROPERTIES:\n"
+            f"   :CUSTOM_ID: task-reopen\n"
+            f"   :CLOSED:   {closed_at}\n"
+            f":END:\n",
+        )
+        task, _, _, _ = find_task("task-reopen")
+
+        with check:
+            assert task.status == "TODO"
+        with check:
+            assert task.closed == ""
+        with check:
+            assert "CLOSED" not in task.properties
+
+    def test_a_finished_task_edited_again_keeps_the_time_it_was_finished(
         self, sample_tasks_file: TasksFileInfo
-    ) -> None:
+    ):
         """
-        Given an existing task
-        When the task is updated
-        Then :MODIFIED: timestamp should be set with inactive timestamp format
+        GIVEN: A task already finished
+         WHEN: It is edited without reopening it
+         THEN: :CLOSED: still holds the time it was finished, and :MODIFIED:
+               moves -- when the work was done is a fact about the work, and
+               correcting a typo afterwards does not change it
         """
-        updated_task = make_task(
-            headline="JIRA-1234 Updated headline",
-            custom_id="task-jira-1234",
-            status="TODO",
+        update_task(
+            "task-new-feature",
+            make_task(
+                "Implement new feature", "task-new-feature", status="DONE"
+            ),
         )
+        finished_at = find_task("task-new-feature")[0].closed
+        assert finished_at, "fixture"
 
-        update_task("task-jira-1234", updated_task)
-
-        # Verify the task has :MODIFIED: timestamp
-        result = find_task("task-jira-1234")
-        assert result is not None
-        task, _, _, _ = result
-        assert task.modified != ""
-        # Inactive timestamp format: [YYYY-MM-DD DDD HH:MM]
-        assert task.modified.startswith("[")
-        assert task.modified.endswith("]")
-
-    def test_update_task_to_done_sets_closed_timestamp(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """
-        Given a task with status TODO
-        When the task is updated to status DONE
-        Then :CLOSED: timestamp should be set with active timestamp format
-        """
-        done_task = make_task(
-            headline="JIRA-1234 Fix authentication bug",
-            custom_id="task-jira-1234",
-            status="DONE",
+        update_task(
+            "task-new-feature",
+            make_task(
+                "Implement new feature, revised",
+                "task-new-feature",
+                status="DONE",
+            ),
         )
+        task, _, _, _ = find_task("task-new-feature")
 
-        update_task("task-jira-1234", done_task)
-
-        # Verify the task has :CLOSED: timestamp
-        result = find_task("task-jira-1234")
-        assert result is not None
-        task, _, _, _ = result
-        assert task.closed != ""
-        # Active timestamp format: <YYYY-MM-DD DDD HH:MM>
-        assert task.closed.startswith("<")
-        assert task.closed.endswith(">")
-
-    def test_reopen_task_clears_closed_timestamp(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """
-        Given a task with status TODO
-        When the task is marked DONE then reopened to TODO
-        Then :CLOSED: timestamp should be cleared
-        """
-        # First mark a TODO task as done (use task-jira-1234 which starts as TODO)
-        done_task = make_task(
-            headline="JIRA-1234 Fix authentication bug",
-            custom_id="task-jira-1234",
-            status="DONE",
-        )
-        update_task("task-jira-1234", done_task)
-
-        # Verify it has :CLOSED:
-        #
-        result = find_task("task-jira-1234")
-        assert result is not None
-        task, _, _, _ = result
-        assert task.closed
-
-        # Now reopen it
-        #
-        reopened_task = make_task(
-            headline="JIRA-1234 Fix authentication bug",
-            custom_id="task-jira-1234",
-            status="TODO",
-        )
-        update_task("task-jira-1234", reopened_task)
-
-        # Verify :CLOSED: was cleared
-        #
-        result = find_task("task-jira-1234")
-        assert result is not None
-        task, _, _, _ = result
-
-        # Task declares every timestamp `str`, so an absent one reads as
-        # empty. The drawer is the observable that matters: the property is
-        # gone from the file, not merely blank on the parsed task.
-        #
-        assert task.closed == ""
-        assert "CLOSED" not in task.properties
-
-    def test_update_done_task_sets_modified_but_not_closed(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """
-        Given a task transitioning from TODO to DONE
-        When the task is later updated (but stays DONE)
-        Then :MODIFIED: should be updated but :CLOSED: should be preserved
-        """
-        # First mark a TODO task as done (use task-new-feature which starts as TODO)
-        done_task = make_task(
-            headline="Implement new feature",
-            custom_id="task-new-feature",
-            status="DONE",
-        )
-        update_task("task-new-feature", done_task)
-
-        # Get the original :CLOSED: timestamp
-        result = find_task("task-new-feature")
-        assert result is not None
-        task, _, _, _ = result
-        original_closed = task.closed
-        assert original_closed != ""
-
-        # Update the task content (but keep it DONE)
-        updated_done_task = make_task(
-            headline="Implement new feature - updated description",
-            custom_id="task-new-feature",
-            status="DONE",
-        )
-        update_task("task-new-feature", updated_done_task)
-
-        # Verify :MODIFIED: was set but :CLOSED: was preserved
-        result = find_task("task-new-feature")
-        assert result is not None
-        task, _, _, _ = result
-        assert task.modified != ""
-        # :CLOSED: should be preserved when task stays DONE
-        assert task.closed == original_closed
-
-    def test_reopen_done_task_without_closed_property(
-        self, sample_tasks_file: TasksFileInfo
-    ) -> None:
-        """
-        Given a DONE task that has no :CLOSED: property
-        When the task is reopened to TODO status
-        Then it should not raise an error (gracefully handle missing :CLOSED:)
-
-        This edge case can occur with manually created tasks or tasks
-        created before CLOSED tracking was implemented.
-        """
-        # Create a DONE task without :CLOSED: property by directly adding to file
-        task_done_no_closed = """** DONE Task done without closed
-:PROPERTIES:
-   :CUSTOM_ID: task-done-no-closed
-:END:
-
-*** Description
-This task is DONE but has no CLOSED timestamp.
-"""
-        # Add it to the Active section
-        content = global_state.config.tasks_file.read_text()
-        content = re.sub(
-            rf"(\* {'Tasks'}\n)",
-            rf"\1{task_done_no_closed}\n",
-            content,
-        )
-        global_state.config.tasks_file.write_text(content)
-
-        # Verify the task exists and has no :CLOSED:
-        result = find_task("task-done-no-closed")
-        assert result is not None
-        task, _, _, _ = result
-        assert task.status == "DONE"
-        assert task.closed == ""
-
-        # Now reopen it to TODO - should not raise an error
-        reopened_task = make_task(
-            headline="Task done without closed",
-            custom_id="task-done-no-closed",
-            status="TODO",
-        )
-        update_task("task-done-no-closed", reopened_task)
-
-        # Verify it's now TODO and still has no :CLOSED:
-        result = find_task("task-done-no-closed")
-        assert result is not None
-        task, _, _, _ = result
-        assert task.status == "TODO"
-        assert task.closed == ""
-        # Should have :MODIFIED: timestamp
-        assert task.modified != ""
+        with check:
+            assert task.closed == finished_at
+        with check:
+            assert task.modified
 
 
 class TestPropertyPreservation:
@@ -1021,11 +916,14 @@ class TestPropertyPreservation:
     emit the :PROPERTIES: drawer, so round-tripped entries never included it.
     """
 
-    def test_heading_to_org_string_renders_properties_drawer(self) -> None:
+    def test_rendering_a_task_back_out_keeps_its_drawer(self):
         """
-        GIVEN a heading parsed from an entry with a :PROPERTIES: drawer
-        WHEN heading_to_org_string is called
-        THEN the output contains :PROPERTIES:, each property, and :END:
+        GIVEN: A task entry carrying a :PROPERTIES: drawer
+         WHEN: It is parsed and rendered back to org text
+         THEN: The drawer and every property in it survive
+
+        This is the render an update is built from, so a property missing
+        here is a property deleted from the file on the next write.
         """
         entry = (
             "** TODO Task with properties\n"
@@ -1059,9 +957,13 @@ class TestPropertyPreservation:
         self, temp_org_dir: Path, prop: str, value: str
     ) -> None:
         """
-        GIVEN a task with :ID:, :CUSTOM_ID:, and :PROJECT: set
-        WHEN update_task is called with an entry that omits the :PROPERTIES: drawer
-        THEN each property should be preserved after the update
+        GIVEN: A task carrying :ID:, :CUSTOM_ID: and :PROJECT:, and a
+               replacement entry written without a drawer at all
+         WHEN: The task is updated
+         THEN: Each property is still there, because an update replaces the
+               content a caller wrote and not the bookkeeping the server
+               keeps -- a dropped :CUSTOM_ID: makes every link to the task
+               dangle, and a dropped :PROJECT: unfiles it
         """
         task_entry = (
             "** TODO Task to test property preservation\n"
