@@ -387,26 +387,34 @@ class TestUpdateProject:
 ########################################################################
 #
 class TestReplaceProjectSection:
-    """Tests for the section replacement helper."""
+    """Putting new content under one heading of a project file."""
 
     ####################################################################
     #
     @pytest.mark.parametrize(
-        "section_name,new_content",
+        "section, content, replaced",
         [
-            ("Description", "New desc."),
-            ("Notes", "Updated notes."),
+            pytest.param("Description", "New desc.", "Old desc.", id="first"),
+            pytest.param("Notes", "Updated notes.", "Old notes.", id="last"),
+            pytest.param("Design", "Architecture notes.", None, id="new"),
         ],
     )
-    def test_replace_existing_section(
-        self,
-        section_name: str,
-        new_content: str,
-    ) -> None:
+    def test_a_section_is_rewritten_in_place_and_added_when_absent(
+        self, section: str, content: str, replaced: str | None
+    ):
         """
-        GIVEN: file content with existing sections
-        WHEN:  replace_project_section is called
-        THEN:  the target section body is replaced
+        GIVEN: A project file holding several sections
+         WHEN: One of them is given new content, or content is given for a
+               section the file does not have
+         THEN: That section holds the new content, the text it replaced is
+               gone, and a section the file lacked is added
+          AND: The other sections are untouched, since this rewrites the whole
+               file to change one heading
+
+        Replacing the first and the last section are checked separately
+        because the boundaries of a section are found differently at each end
+        -- the last one runs to the end of the file rather than to the next
+        heading.
         """
         file_content = (
             "* Project  :project:\n"
@@ -415,30 +423,20 @@ class TestReplaceProjectSection:
             "** Notes\nOld notes.\n"
         )
 
-        result = replace_project_section(
-            file_content, section_name, new_content
-        )
-        assert new_content in result
+        result = replace_project_section(file_content, section, content)
 
-    ####################################################################
-    #
-    def test_append_new_section(self) -> None:
-        """
-        GIVEN: file content without the target section
-        WHEN:  replace_project_section is called
-        THEN:  the section is appended at the end
-        """
-        file_content = (
-            "* Project  :project:\n"
-            ":PROPERTIES:\n:END:\n\n"
-            "** Description\nSome desc.\n"
-        )
+        with check:
+            assert f"** {section}" in result
+        with check:
+            assert content in result
+        if replaced is not None:
+            with check:
+                assert replaced not in result, "the old body is still there"
 
-        result = replace_project_section(
-            file_content, "Design", "Architecture notes."
-        )
-        assert "** Design" in result
-        assert "Architecture notes." in result
+        untouched = {"Old desc.", "Old notes."} - {replaced}
+        for survivor in untouched:
+            with check:
+                assert survivor in result, "another section was disturbed"
 
 
 ########################################################################
@@ -534,39 +532,42 @@ class TestRegenerateProjectIndex:
 ########################################################################
 #
 class TestLinkTaskToProject:
-    """Tests for linking tasks to projects."""
+    """
+    Appending a rendered link line to a project's Related Tasks.
+
+    Note:
+        This is `projects.link_task_to_project`, which takes an already
+        rendered link line. It is not the tool of the same name: `tools.py`
+        dispatches to `linking.link_task_to_project`, which maintains both
+        ends and takes identifiers. Nothing in the server calls this one.
+    """
 
     ####################################################################
     #
-    def test_link_adds_to_related_tasks(
-        self, sample_project_files: ProjectFilesInfo
-    ) -> None:
+    @pytest.mark.parametrize(
+        "slug, ticket",
+        [
+            pytest.param("booklore", "GH-99", id="section-already-there"),
+            pytest.param("email-migration", "GH-55", id="section-missing"),
+        ],
+    )
+    def test_a_link_lands_in_related_tasks_whether_or_not_it_exists_yet(
+        self, sample_project_files: ProjectFilesInfo, slug: str, ticket: str
+    ):
         """
-        GIVEN: a project exists
-        WHEN:  link_task_to_project is called
-        THEN:  the task link appears in Related Tasks section
+        GIVEN: A project that lists tasks already, and one with no Related
+               Tasks section at all
+         WHEN: A link line is added to each
+         THEN: It is in that section afterwards either way, the section being
+               created where it was missing rather than the link being
+               dropped for want of somewhere to put it
         """
-        task_link = "- [[file:~/org/tasks.org::#task-gh-99][GH-99 Test task]]"
-        link_task_to_project("booklore", task_link)
+        link_task_to_project(
+            slug,
+            f"- [[file:~/org/tasks.org::#task-{ticket.lower()}][{ticket}]]",
+        )
 
-        project = get_project("booklore")
-        assert "GH-99" in project.sections["Related Tasks"]
-
-    ####################################################################
-    #
-    def test_link_creates_section_if_missing(
-        self, sample_project_files: ProjectFilesInfo
-    ) -> None:
-        """
-        GIVEN: a project without a Related Tasks section
-        WHEN:  link_task_to_project is called
-        THEN:  the section is created with the link
-        """
-        task_link = "- [[file:~/org/tasks.org::#task-gh-55][GH-55 New task]]"
-        link_task_to_project("email-migration", task_link)
-
-        project = get_project("email-migration")
-        assert "GH-55" in project.sections["Related Tasks"]
+        assert ticket in get_project(slug).sections["Related Tasks"]
 
 
 ########################################################################

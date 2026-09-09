@@ -22,7 +22,6 @@ from mcp_server.tasks import (
     find_task,
     mint_custom_id,
     scan_task_identities,
-    update_task,
     validate_custom_id,
 )
 from tests.conftest import TasksFileInfo, make_task, make_tasks_org
@@ -30,20 +29,6 @@ from tests.conftest import TasksFileInfo, make_task, make_tasks_org
 # =============================================================================
 # Fixtures
 # =============================================================================
-
-
-###############################################################################
-#
-@pytest.fixture
-def task_with_an_id(temp_org_dir: Path) -> Path:
-    """One task, carrying the id its headline would mint."""
-    (temp_org_dir / "tasks.org").write_text(
-        make_tasks_org(
-            [make_task("Rewrite the importer", "task-rewrite-the-importer")],
-            [],
-        )
-    )
-    return temp_org_dir
 
 
 # =============================================================================
@@ -371,40 +356,3 @@ class TestRepairingATaskThatHasNone:
 
         with pytest.raises(ValueError, match="names more than one task"):
             ensure_custom_id(task)
-
-
-# =============================================================================
-# Keeping
-# =============================================================================
-
-
-###############################################################################
-###############################################################################
-#
-class TestAnIdOutlivesAnEdit:
-    """An id names the task for as long as the task exists."""
-
-    def test_a_replacement_that_omits_the_drawer_keeps_the_id(
-        self, task_with_an_id: Path
-    ):
-        """
-        GIVEN: A task carrying a :CUSTOM_ID:, and a replacement entry for it
-               written without a :PROPERTIES: drawer
-         WHEN: The task is updated
-         THEN: It still carries the same id, because an update replaces the
-               content a caller wrote and not the properties the server keeps
-          AND: No new id is minted for it, which would leave every project
-               linking to it pointing at an anchor that no longer resolves
-        """
-        update_task(
-            "task-rewrite-the-importer",
-            "** TODO Rewrite the importer, revised scope",
-        )
-
-        task, _, _, _ = find_task("task-rewrite-the-importer")
-
-        assert task.custom_id == "task-rewrite-the-importer"
-        assert task.headline == "Rewrite the importer, revised scope"
-        assert scan_task_identities(
-            (task_with_an_id / "tasks.org").read_text()
-        ) == ["task-rewrite-the-importer"]

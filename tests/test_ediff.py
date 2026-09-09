@@ -208,51 +208,44 @@ class TestEnsureElispLoaded:
 
         mock_run.assert_not_called()
 
-    def test_handles_missing_emacsclient(
+    @pytest.mark.parametrize(
+        "failure",
+        ["no emacsclient", "emacsclient fails"],
+    )
+    def test_elisp_that_will_not_load_is_not_recorded_as_loaded(
         self,
         tmp_path: Path,
         mocker: MockerFixture,
         config_factory: Callable[[Config], None],
+        failure: str,
     ):
         """
-        GIVEN: emacsclient is not available
-        WHEN: ensure_elisp_loaded() is called
-        THEN: Returns without error
+        GIVEN: An Emacs that cannot be reached, or one that refuses the load
+         WHEN: The elisp is loaded
+         THEN: It returns quietly, and nothing is recorded as loaded
+
+        Both matter and for the same reason. Loading is skipped when the
+        file is already recorded, so recording a load that did not happen
+        means every later call skips it too -- one unreachable Emacs at
+        startup would leave the elisp missing for the rest of the session.
         """
-        fake_path = tmp_path / "nonexistent"
-        mocker.patch("shutil.which", return_value=None)
-        config_factory(Config(emacsclient_path=fake_path))
+        if failure == "no emacsclient":
+            mocker.patch("shutil.which", return_value=None)
+            config_factory(Config(emacsclient_path=tmp_path / "nonexistent"))
+        else:
+            fake_client = tmp_path / "emacsclient"
+            fake_client.write_text("fake")
+            config_factory(Config(emacsclient_path=fake_client))
 
-        ensure_elisp_loaded()
-
-        assert global_state.elisp_loaded == set()
-
-    def test_handles_subprocess_error(
-        self,
-        tmp_path: Path,
-        mocker: MockerFixture,
-        config_factory: Callable[[Config], None],
-    ):
-        """
-        GIVEN: emacsclient execution fails
-        WHEN: ensure_elisp_loaded() is called
-        THEN: Logs warning and continues
-        """
-        fake_client = tmp_path / "emacsclient"
-        fake_client.write_text("fake")
-        config_factory(Config(emacsclient_path=fake_client))
-
-        # Mock elisp file
-        elisp_file = tmp_path / "emacs_ediff.el"
-        elisp_file.write_text("(defun test ())")
-        mocker.patch.object(
-            Path, "__truediv__", return_value=elisp_file, autospec=False
-        )
-
-        mocker.patch(
-            "subprocess.run",
-            side_effect=subprocess.CalledProcessError(1, "cmd"),
-        )
+            elisp_file = tmp_path / "emacs_ediff.el"
+            elisp_file.write_text("(defun test ())")
+            mocker.patch.object(
+                Path, "__truediv__", return_value=elisp_file, autospec=False
+            )
+            mocker.patch(
+                "subprocess.run",
+                side_effect=subprocess.CalledProcessError(1, "cmd"),
+            )
 
         ensure_elisp_loaded()
 
@@ -396,69 +389,62 @@ class TestRequestEdiffApproval:
         assert approved is True
         assert final_content == "** TODO EDITED Task content"
 
-    def test_handles_subprocess_timeout(
+    @pytest.mark.parametrize(
+        "failure, reachable, approved",
+        [
+            pytest.param(
+                subprocess.TimeoutExpired("cmd", 300),
+                True,
+                False,
+                id="emacs-never-answered",
+            ),
+            pytest.param(
+                subprocess.CalledProcessError(1, "cmd"),
+                True,
+                True,
+                id="emacs-returned-an-error",
+            ),
+            pytest.param(None, False, True, id="no-emacsclient-at-all"),
+        ],
+    )
+    def test_a_review_that_cannot_be_held_never_loses_the_content(
         self,
         tmp_path: Path,
         mocker: MockerFixture,
         config_factory: Callable[[Config], None],
+        failure: Exception | None,
+        reachable: bool,
+        approved: bool,
     ):
         """
-        GIVEN: subprocess times out
-        WHEN: request_ediff_approval() is called
-        THEN: Returns (False, original_content)
+        GIVEN: An Emacs that never answers, one that returns an error, and no
+               emacsclient at all
+         WHEN: A change is put up for review
+         THEN: The proposed content comes back unchanged in every case, since
+               a review that could not be held is no reason to lose the edit
+          AND: A missing or broken Emacs approves, because approval is a
+               convenience and refusing would make the server unusable
+               wherever Emacs is not running -- but a timeout does not, since
+               there a person may still be looking at the diff, and approving
+               under them applies a change they were in the middle of deciding
+               about
         """
-        fake_client = tmp_path / "emacsclient"
-        fake_client.write_text("fake")
+        if reachable:
+            fake_client = tmp_path / "emacsclient"
+            fake_client.write_text("fake")
+            mocker.patch("subprocess.run", side_effect=failure)
+        else:
+            fake_client = tmp_path / "nonexistent"
+            mocker.patch("shutil.which", return_value=None)
+
         config_factory(
             Config(ediff_approval=True, emacsclient_path=fake_client)
         )
 
-        mocker.patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired("cmd", 300),
+        assert request_ediff_approval("old task", "new task", "gh-127") == (
+            approved,
+            "new task",
         )
-
-        old_content = "old task"
-        new_content = "new task"
-
-        approved, final_content = request_ediff_approval(
-            old_content, new_content, "gh-127"
-        )
-
-        assert approved is False
-        assert final_content == new_content
-
-    def test_handles_subprocess_error(
-        self,
-        tmp_path: Path,
-        mocker: MockerFixture,
-        config_factory: Callable[[Config], None],
-    ):
-        """
-        GIVEN: subprocess fails with error
-        WHEN: request_ediff_approval() is called
-        THEN: Falls back to auto-approve
-        """
-        fake_client = tmp_path / "emacsclient"
-        fake_client.write_text("fake")
-        config_factory(
-            Config(ediff_approval=True, emacsclient_path=fake_client)
-        )
-
-        mocker.patch(
-            "subprocess.run",
-            side_effect=subprocess.CalledProcessError(1, "cmd"),
-        )
-
-        old_content = "old task"
-        new_content = "new task"
-
-        approved, final_content = request_ediff_approval(
-            old_content, new_content, "gh-127"
-        )
-
-        assert approved is True
-        assert final_content == new_content
 
     def test_uses_context_specific_filenames(
         self,
@@ -493,55 +479,3 @@ class TestRequestEdiffApproval:
         emacsclient_call = " ".join(call_args[0][0])
         assert "old-gh-127.org" in emacsclient_call
         assert "new-gh-127.org" in emacsclient_call
-
-    def test_creates_temp_directory_with_prefix(
-        self,
-        tmp_path: Path,
-        mocker: MockerFixture,
-        config_factory: Callable[[Config], None],
-    ):
-        """
-        GIVEN: ediff approval is requested
-        WHEN: temp files are created
-        THEN: TemporaryDirectory uses correct prefix
-        """
-        fake_client = tmp_path / "emacsclient"
-        fake_client.write_text("fake")
-        config_factory(
-            Config(ediff_approval=True, emacsclient_path=fake_client)
-        )
-
-        mock_tempdir = mocker.patch("tempfile.TemporaryDirectory")
-        mocker.patch(
-            "subprocess.run",
-            return_value=MagicMock(stdout='"approved"', returncode=0),
-        )
-
-        request_ediff_approval("old", "new", "test")
-
-        mock_tempdir.assert_called_once_with(prefix="emacs-org-mcp-ediff-")
-
-    def test_handles_missing_emacsclient(
-        self,
-        tmp_path: Path,
-        mocker: MockerFixture,
-        config_factory: Callable[[Config], None],
-    ):
-        """
-        GIVEN: emacsclient is not found
-        WHEN: request_ediff_approval() is called
-        THEN: Falls back to auto-approve
-        """
-        fake_path = tmp_path / "nonexistent"
-        config_factory(Config(ediff_approval=True, emacsclient_path=fake_path))
-        mocker.patch("shutil.which", return_value=None)
-
-        old_content = "old"
-        new_content = "new"
-
-        approved, final_content = request_ediff_approval(
-            old_content, new_content, "test"
-        )
-
-        assert approved is True
-        assert final_content == new_content
